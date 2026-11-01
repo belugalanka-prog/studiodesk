@@ -1,0 +1,5 @@
+[functions.issue-invoice]
+verify_jwt = true
+
+[functions.record-payment]
+verify_jwt = true
