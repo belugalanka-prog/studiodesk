@@ -8,9 +8,10 @@ alter table public.messages add constraint messages_body_ok
 -- 2. Notify the other side when a message is sent (shows in the 🔔 bell).
 create or replace function public.notify_new_message() returns trigger
 language plpgsql security definer set search_path=public as $$
-declare v_title text; v_client uuid; v_is_admin boolean;
+declare v_title text; v_client uuid; v_is_admin boolean; v_cname text;
 begin
   select p.title, p.client_id into v_title, v_client from public.projects p where p.id = new.project_id;
+  select name into v_cname from public.clients where id = v_client;
   select (role = 'admin') into v_is_admin from public.profiles where id = new.sender_id;
   if coalesce(v_is_admin, false) then
     insert into public.notifications(user_id, title, body, link)
@@ -19,7 +20,7 @@ begin
       from public.client_users cu where cu.client_id = v_client and cu.user_id <> new.sender_id;
   else
     insert into public.notifications(user_id, title, body, link)
-      select a.id, 'New client message', coalesce(v_title,'Project') || ': ' || left(new.body, 140),
+      select a.id, 'New message from ' || coalesce(v_cname,'a client'), coalesce(v_title,'Project') || ': ' || left(new.body, 140),
              'project-details.html?id=' || new.project_id
       from public.profiles a where a.role = 'admin' and a.id <> new.sender_id;
   end if;
