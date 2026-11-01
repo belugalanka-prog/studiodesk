@@ -13,10 +13,13 @@ Static HTML/CSS/ES module application backed by Supabase (Auth, Postgres and pri
 
 ## Setup
 
+> Already created your database from an older version? Run `supabase/fixes.sql` once in the SQL Editor. It closes a privilege-escalation hole and fixes client file downloads.
+
+
 1. Create a Supabase project and run `supabase/schema.sql` in its SQL Editor.
 2. In **Authentication → URL Configuration**, set your deployed Site URL and add local/deployed redirect URLs.
 3. Copy `assets/js/config.example.js` to `assets/js/config.js` and set the project URL and anon/publishable key. This key is intended for browser use; never place a service-role key in this app.
-4. Serve the repository root over HTTP (ES modules do not work from `file://`). For example: `python -m http.server 8080`.
+4. Serve this folder over HTTP (ES modules do not work from `file://`). For example: `python -m http.server 8080`.
 5. Create an auth user, then in SQL Editor set its `profiles.role` to `admin` for the first administrator. The profile trigger creates the row automatically.
 6. Deploy the repository as a Vercel static site. No build command is required; output directory is `.`.
 
@@ -32,4 +35,4 @@ The application includes responsive admin navigation, dashboards, searchable cli
 
 ## Vercel
 
-Import the GitHub repository in Vercel, keep framework preset **Other**, leave build command empty, and use `.` as output directory. Configure the production domain in Supabase Auth redirect settings. Add `assets/js/config.js` only with public URL/key values; alternatively inject these public values in a generated config file during deployment. The Supabase anon key is safe to publish only with RLS correctly enabled.
+Import the GitHub repository in Vercel. If these files sit inside a sub-folder (e.g. `bussiness/`), set **Root Directory** to that folder. Keep framework preset **Other**, leave build command empty, and use `.` as output directory. Configure the production domain in Supabase Auth redirect settings. Add `assets/js/config.js` only with public URL/key values; alternatively inject these public values in a generated config file during deployment. The Supabase anon key is safe to publish only with RLS correctly enabled.
