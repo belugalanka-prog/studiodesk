@@ -1,42 +1,63 @@
 import { supabase } from './supabase.js';
+import { escapeHTML as h } from './common.js';
 if (localStorage.getItem('sd-theme') === 'dark') document.documentElement.classList.add('dark');
 
 const $ = s => document.querySelector(s);
-const form = $('#mfa-form'), error = form.querySelector('.form-error'), ok = form.querySelector('.form-ok');
-const mode = new URLSearchParams(location.search).get('mode') === 'enroll' ? 'enroll' : 'verify';
-let factorId = null;
+const box = $('#mfa-box'), err = $('#mfa-error'), title = $('#mfa-title'), sub = $('#mfa-sub');
+const DASH = 'pages/dashboard.html';
+const fail = m => { err.textContent = m; };
+$('#mfa-signout').addEventListener('click', async e => { e.preventDefault(); await supabase.auth.signOut(); location.replace('login.html'); });
 
 const { data: { user } } = await supabase.auth.getUser();
-if (!user) { location.replace('login.html'); }
+if (!user) location.replace('login.html');
+const { data: prof } = user ? await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle() : { data: null };
+if (user && prof?.role !== 'admin') location.replace('client-login.html');
 
-$('#mfa-out').addEventListener('click', async e => { e.preventDefault(); await supabase.auth.signOut(); location.href = 'login.html'; });
+const codeField = `<label>6-digit code<input id="mfa-code" class="field" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="123456"></label>`;
 
-async function init() {
-  if (mode === 'enroll') {
-    $('#mfa-title').textContent = 'Set up two-step verification';
-    $('#mfa-help').textContent = 'Scan the QR code with an authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password…), then enter the 6-digit code it shows.';
-    $('#mfa-skip').hidden = false;
-    // remove abandoned, never-verified attempts first
-    const { data: list } = await supabase.auth.mfa.listFactors();
-    for (const f of list?.all || []) if (f.factor_type === 'totp' && f.status === 'unverified') await supabase.auth.mfa.unenroll({ factorId: f.id });
-    const { data, error: e } = await supabase.auth.mfa.enroll({ factorType: 'totp', friendlyName: `StudioDesk ${new Date().toISOString().slice(0, 16)}` });
-    if (e) { error.textContent = 'Could not start setup. Please try again.'; return; }
-    factorId = data.id; $('#mfa-qr').src = data.totp.qr_code; $('#mfa-secret').textContent = data.totp.secret; $('#mfa-setup').hidden = false;
-  } else {
-    $('#mfa-help').textContent = 'Enter the 6-digit code from your authenticator app.';
-    const { data } = await supabase.auth.mfa.listFactors();
-    factorId = data?.totp?.[0]?.id;
-    if (!factorId) location.replace('mfa.html?mode=enroll');
-  }
+async function verify(factorId, code) {
+  const ch = await supabase.auth.mfa.challenge({ factorId });
+  if (ch.error) throw ch.error;
+  const v = await supabase.auth.mfa.verify({ factorId, challengeId: ch.data.id, code });
+  if (v.error) throw v.error;
 }
-if (user) await init();
 
-form.addEventListener('submit', async e => {
-  e.preventDefault(); error.textContent = ''; ok.textContent = '';
-  const code = String(new FormData(form).get('code') || '').trim();
-  if (!/^\d{6}$/.test(code)) { error.textContent = 'Enter the 6-digit code.'; return; }
-  const btn = form.querySelector('button'); btn.disabled = true;
-  const { error: e } = await supabase.auth.mfa.challengeAndVerify({ factorId, code });
-  if (e) { error.textContent = 'That code is not correct. Check the time on your phone and try again.'; form.elements.code.value = ''; btn.disabled = false; return; }
-  ok.textContent = 'Verified. Redirecting…'; setTimeout(() => location.replace('pages/dashboard.html'), 600);
-});
+function challenge(factorId) {
+  title.textContent = 'Enter your code'; sub.textContent = 'Open your authenticator app and type the 6-digit code for StudioDesk.';
+  box.innerHTML = `<form id="mfa-form">${codeField}<button class="button primary full" type="submit">Verify</button></form>`;
+  $('#mfa-code').focus();
+  $('#mfa-form').addEventListener('submit', async e => {
+    e.preventDefault(); fail('');
+    const btn = e.target.querySelector('button'); btn.disabled = true;
+    try { await verify(factorId, $('#mfa-code').value.trim()); location.replace(DASH); }
+    catch (ex) { fail('That code was not accepted. Wait for a fresh code and try again.'); $('#mfa-code').value = ''; btn.disabled = false; }
+  });
+}
+
+async function enroll() {
+  title.textContent = 'Set up two-step verification';
+  sub.textContent = 'Scan the QR code with an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy…), then enter the code it shows.';
+  // discard half-finished attempts so they don't pile up
+  const { data: all } = await supabase.auth.mfa.listFactors();
+  for (const f of (all?.all || []).filter(f => f.factor_type === 'totp' && f.status === 'unverified')) await supabase.auth.mfa.unenroll({ factorId: f.id });
+  const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'totp', friendlyName: `StudioDesk ${new Date().toISOString().slice(0, 16)}` });
+  if (error) { fail(/disabled|not enabled/i.test(error.message) ? 'MFA is switched off for this project. In Supabase go to Authentication → Sign In / Providers → Multi-Factor and enable TOTP.' : error.message); return; }
+  box.innerHTML = `<div class="qr"><img alt="QR code to scan with your authenticator app" src="${h(data.totp.qr_code)}" width="180" height="180"></div><p class="small muted">Can’t scan? Enter this key manually:<br><code class="secret">${h(data.totp.secret)}</code></p><form id="mfa-form">${codeField}<button class="button primary full" type="submit">Turn on two-step verification</button></form>`;
+  $('#mfa-code').focus();
+  $('#mfa-form').addEventListener('submit', async e => {
+    e.preventDefault(); fail('');
+    const btn = e.target.querySelector('button'); btn.disabled = true;
+    try { await verify(data.id, $('#mfa-code').value.trim()); location.replace(DASH); }
+    catch (ex) { fail('That code was not accepted. Check the time on your phone and try again.'); $('#mfa-code').value = ''; btn.disabled = false; }
+  });
+}
+
+if (user && prof?.role === 'admin') {
+  try {
+    const [{ data: aal }, { data: f }] = await Promise.all([supabase.auth.mfa.getAuthenticatorAssuranceLevel(), supabase.auth.mfa.listFactors()]);
+    const verified = f?.totp?.[0];                       // listFactors().totp contains verified factors only
+    if (verified && aal?.currentLevel === 'aal2') location.replace(DASH);
+    else if (verified) challenge(verified.id);
+    else await enroll();
+  } catch (ex) { fail(ex.message || 'Something went wrong.'); }
+}

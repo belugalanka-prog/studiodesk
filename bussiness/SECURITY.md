@@ -36,18 +36,8 @@ Then in the dashboard: **Database → Webhooks → Create**: table `public.notif
 
 In **Authentication → Email Templates**, edit the "Invite user" template with your studio's wording.
 
-## Two-step verification (MFA) for admins
-1. Sign in → **Settings → Security → Set up authenticator app**, scan the QR code, enter the code.
-2. Only after that, press **Require two-step verification**. From then on the database itself refuses admin actions from a password-only session, not just the screens.
-3. **Locked out?** Supabase → SQL Editor: `update public.business_settings set require_admin_mfa = false;`
-4. Settings → Security also lists your last sign-ins, and you get an in-app (and e-mailed, if alerts are set up) notice when your account signs in from a new IP/browser.
-
-## Backups
-- `supabase/` free plan has no daily backups, so this repo includes `.github/workflows/backup.yml`: every night it dumps the database, **restores it into a scratch database and compares row counts**, then stores the file for 30 days.
-- Setup: put the project in a **private** GitHub repository → Settings → Secrets → `SUPABASE_DB_URL` (Supabase → Project Settings → Database → connection string, "Session pooler").
-- Run it by hand any time: `SUPABASE_DB_URL=... bussiness/scripts/backup.sh backups`
-- **Not covered:** uploaded files (project files, bank slips) live in Supabase Storage. Download them periodically with the Supabase CLI (`supabase storage cp -r ss:///project-files ./files --experimental`) or keep copies of the originals.
-- Also test a real restore into a free Supabase project once a quarter.
-
-## Daily reminders (deadlines, shoots)
-`features.sql` schedules `send_deadline_reminders()` with pg_cron at 07:30 Sri Lanka time. Enable **Database → Extensions → pg_cron** first, then run the file. Reminders are notifications; the `notify-admin` webhook turns them into e-mails.
+## v4 additions
+- **Admin MFA**: every admin should enrol an authenticator at `mfa.html` (Supabase → Authentication → Sign In / Providers → Multi-Factor: TOTP must be enabled). Once enrolled, a code is asked at every sign-in. In Settings → Admin security you can *require* MFA for all admins; the database then refuses admin actions from sessions that skipped the code. Enrol every admin first. Recovery if locked out: `update public.business_settings set enforce_admin_mfa=false;`
+- **New-device alert**: an admin sign-in from a browser the account never used before notifies all admins (e-mailed through `notify-admin`). Failed-password alerts are not possible from the browser; Supabase Auth → Logs shows them.
+- **Reminders by e-mail** reuse the `notify-admin` webhook; optional daily schedule: `select cron.schedule('studiodesk-reminders','0 3 * * *','select public.generate_reminders()');`
+- **Payment slips** live in the private `payment-slips` bucket; clients can upload only into their own invoice folder.

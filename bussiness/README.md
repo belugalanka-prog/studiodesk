@@ -13,11 +13,16 @@ Static HTML/CSS/ES module application backed by Supabase (Auth, Postgres and pri
 
 ## Setup
 
-> **Run in this order:** schema.sql → fixes.sql → upgrade.sql → security.sql → features.sql
->
-> **Features added in v3:** bank-slip upload and one-click approval, expenses and monthly profit, calendar with daily reminders, revision rounds and client approval, CSV export (clients, invoices, payments, expenses), activity log page, admin two-step verification, new sign-in alerts, nightly backups with restore test.
->
-> **Also new in this version:** run `supabase/security.sql` (after the other SQL files) and follow `SECURITY.md`.
+> **New in v4 (run `supabase/features.sql` last, then read `BACKUP.md`):**
+> - Payment slips: clients upload a transfer slip on their invoice; you confirm it in one click (Payments page). Optional online payment link in Settings.
+> - Expenses page, profit & loss in Reports, monthly profit on the dashboard and in the monthly PDF.
+> - Calendar (deadlines, tasks, invoices due, shoots/meetings) with in-app and e-mailed reminders (🔔 bell).
+> - Revision and approval tracking: clients Approve / Request changes on shared files; rounds are counted against the rounds included in the quote, and extra rounds can be invoiced.
+> - CSV export of clients, invoices, payments and expenses (with a period picker).
+> - Audit log page (activity and sign-ins), MFA for admins (`mfa.html`, Settings → Admin security), new-device sign-in alerts.
+> - Nightly encrypted database backups + monthly restore test (`.github/workflows/backup.yml`).
+
+> **Earlier version:** run `supabase/security.sql` (after the other SQL files) and follow `SECURITY.md`.
 > - `enquiry.html` is a public form: when someone submits their email, a client record is created in the database automatically.
 > - Admin → Client page: **Client report** PDF. Admin → Reports: **Monthly summary** PDF.
 

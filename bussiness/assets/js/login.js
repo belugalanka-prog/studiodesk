@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js';
+import { recordLogin } from './common.js';
 if (localStorage.getItem('sd-theme') === 'dark') document.documentElement.classList.add('dark');
 
 const isClient = location.pathname.endsWith('client-login.html');
@@ -78,7 +79,7 @@ form.addEventListener('submit', async event => {
     if (!r) { await supabase.auth.signOut(); throw new Error(messages.noprofile); }
     if (r !== role) { await supabase.auth.signOut(); throw new Error(messages.wrongrole); }
     writeGuard({ fails: 0, until: 0 });
-    try { await supabase.rpc('record_login'); } catch (_) { /* alert feature optional until features.sql is applied */ }
+    await recordLogin();                                          // new-device alert for admins
     location.href = home;
   } catch (e) {
     error.textContent = e.message;

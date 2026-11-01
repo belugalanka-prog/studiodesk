@@ -28,6 +28,18 @@ export function escapeHTML(v = '') {
   return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Admins who have set up an authenticator must pass the MFA challenge on every sign-in.
+// When Settings → "Require MFA" is on, an admin without one is sent to set it up first.
+async function mfaStep() {
+  try {
+    const { data: a } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    if (!a || a.currentLevel === 'aal2') return null;
+    if (a.nextLevel === 'aal2') return 'challenge';
+    const { data: s } = await supabase.from('business_settings').select('enforce_admin_mfa').eq('id', true).maybeSingle();
+    return s?.enforce_admin_mfa ? 'enroll' : null;
+  } catch (_) { return null; }
+}
+
 export async function requireUser(role) {
   const login = role === 'client' ? '../client-login.html' : '../login.html';
   const { data: { user } } = await supabase.auth.getUser();
@@ -35,16 +47,20 @@ export async function requireUser(role) {
   const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
   if (!profile) { await supabase.auth.signOut(); location.replace(`${login}?msg=noprofile`); return null; }
   if (profile.role !== role) { await supabase.auth.signOut(); location.replace(`${login}?msg=wrongrole`); return null; }
-  if (role === 'admin') {   // second step (TOTP): verify if enrolled, enrol if the studio requires it
-    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-    const base = location.pathname.includes('/pages/') ? '../' : '';
-    if (aal?.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') { location.replace(`${base}mfa.html?mode=verify`); return null; }
-    if (aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal1') {
-      const { data: s } = await supabase.from('business_settings').select('require_admin_mfa').eq('id', true).maybeSingle();
-      if (s?.require_admin_mfa) { location.replace(`${base}mfa.html?mode=enroll`); return null; }
-    }
-  }
+  if (role === 'admin' && await mfaStep()) { location.replace('../mfa.html'); return null; }
   return { user, profile };
+}
+
+// A random id kept in this browser. A sign-in from an id the account has never used raises an alert for the admins.
+export function deviceId() {
+  try {
+    let d = localStorage.getItem('sd-device');
+    if (!d) { d = crypto.randomUUID(); localStorage.setItem('sd-device', d); }
+    return d;
+  } catch (_) { return 'unknown'; }
+}
+export async function recordLogin() {
+  try { await Promise.race([supabase.rpc('record_login', { p_device: deviceId() }), new Promise(r => setTimeout(r, 2500))]); } catch (_) { /* optional until features.sql is applied */ }
 }
 
 export async function logActivity(action, detail = {}) {
