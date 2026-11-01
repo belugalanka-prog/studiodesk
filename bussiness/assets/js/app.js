@@ -1,6 +1,6 @@
 import { supabase } from './supabase.js';
 import { requireUser, money, date, toast, escapeHTML as h, logActivity, setCurrency } from './common.js';
-import { downloadPDF } from './pdf.js';
+import { downloadPDF, downloadClientReport, downloadMonthlyReport } from './pdf.js';
 
 /* ---------- setup ---------- */
 const clientMode = document.body.dataset.role === 'client';
@@ -144,6 +144,7 @@ async function dashboard() {
   content(`<div class="stats-grid">${stats}</div><div class="grid-two">${panel(clientMode ? 'Your projects' : 'Recent projects', 'Current progress and upcoming deadlines', tableHTML(['PROJECT', 'STATUS', 'DEADLINE', 'PROGRESS'], recent, 'No projects yet.'), `<a href="${clientMode ? 'client-projects.html' : 'projects.html'}">View all →</a>`)}${panel(clientMode ? 'Recent updates' : 'Revenue overview', clientMode ? 'Latest project activity' : 'Verified LKR payments · last six months', clientMode ? `<div class="activity-list">${activities}</div>` : revenueBars(payments))}</div>`);
 }
 async function reports() {
+  setAction(`<input class="field" type="month" id="report-month" value="${today().slice(0, 7)}" max="${today().slice(0, 7)}" aria-label="Report month" style="width:auto"><button class="button primary" data-action="pdf-monthly">⬇ Monthly summary PDF</button>`);
   const [projects, invoices, payments] = await Promise.all([q('projects', 'id,status'), q('invoices', 'id,status,total,due_date,clients(name)'), q('payments', 'invoice_id,amount,verified,paid_at')]);
   const count = (arr, f) => arr.reduce((m, x) => { const k = f(x); m[k] = (m[k] || 0) + 1; return m; }, {});
   const rowsOf = (obj, cls) => Object.entries(obj).map(([k, v]) => `<tr><td>${cls ? badge(k) : h(k)}</td><td>${v}</td></tr>`).join('');
@@ -219,10 +220,10 @@ async function clientDetails() {
   const c = id && await one('clients', '*', id);
   if (!c) { content(`<div class="panel empty">Client not found. ${back('clients.html', 'Back to clients')}</div>`); return; }
   setHead(c.name, c.business_name || 'Client details');
-  setAction(`${back('clients.html', 'Clients')}<button class="button" data-action="archive-client" data-id="${c.id}" data-archived="${!!c.archived_at}">${c.archived_at ? 'Restore client' : 'Archive client'}</button><button class="button" data-create="quote" data-client="${c.id}">＋ Quotation</button><button class="button" data-create="invoice" data-client="${c.id}">＋ Invoice</button><button class="button primary" data-create="project" data-client="${c.id}">＋ New project</button>`);
+  setAction(`${back('clients.html', 'Clients')}<button class="button" data-action="archive-client" data-id="${c.id}" data-archived="${!!c.archived_at}">${c.archived_at ? 'Restore client' : 'Archive client'}</button><button class="button" data-action="pdf-client" data-id="${c.id}">⬇ Client report</button><button class="button" data-create="quote" data-client="${c.id}">＋ Quotation</button><button class="button" data-create="invoice" data-client="${c.id}">＋ Invoice</button><button class="button primary" data-create="project" data-client="${c.id}">＋ New project</button>`);
   const [projects, invoices, payments, links] = await Promise.all([q('projects', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), q('invoices', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), q('payments', 'invoice_id,amount,verified'), q('client_users', 'user_id,profiles(full_name,email)', r => r.eq('client_id', id))]);
   const { balance } = balances(invoices, payments);
-  content(`<div class="grid-two">${panel('Contact', c.archived_at ? 'Archived' : 'Active client', `<div class="kvs">${kv('Email', h(c.email))}${kv('Phone', h(c.phone))}${kv('Business', h(c.business_name))}${kv('Address', h(c.address))}${kv('Registered', date(c.created_at))}</div>`)}${panel('Portal access', 'Let this client sign in to the client portal', `<div class="activity-list">${links.map(l => `<div class="activity"><span class="activity-dot"></span><span><b>${h(l.profiles?.full_name || l.profiles?.email)}</b><div class="sub-cell">${h(l.profiles?.email)}</div></span><button class="button danger small-btn" data-action="unlink" data-user="${l.user_id}" data-client="${id}">Remove</button></div>`).join('') || '<div class="empty">No portal account linked.</div>'}</div><div class="link-row"><input class="field" id="link-email" type="email" placeholder="Registered user's email"><button class="button primary" data-action="link-account" data-client="${id}">Link account</button></div><p class="sub-cell">Create the user first in Supabase → Authentication → Users, then link their email here.</p>`)}</div>${panel('Projects', '', tableHTML(['PROJECT', 'STATUS', 'DEADLINE', 'PROGRESS'], projects.map(p => `<tr><td><a class="name-cell" href="project-details.html?id=${p.id}">${h(p.title)}</a></td><td>${badge(p.status)}</td><td>${date(p.deadline)}</td><td>${p.progress}%</td></tr>`).join(''), 'No projects for this client yet.'))}${panel('Invoices', '', tableHTML(['INVOICE', 'DUE', 'TOTAL', 'BALANCE', 'STATUS'], invoices.map(i => `<tr><td><a class="name-cell" href="invoice-details.html?id=${i.id}">${invNo(i)}</a></td><td>${date(i.due_date)}</td><td>${money(i.total)}</td><td>${i.status === 'Void' ? '—' : money(balance(i))}</td><td>${badge(invStatus(i))}</td></tr>`).join(''), 'No invoices for this client yet.'))}`);
+  content(`<div class="grid-two">${panel('Contact', c.archived_at ? 'Archived' : 'Active client', `<div class="kvs">${kv('Email', h(c.email))}${kv('Phone', h(c.phone))}${kv('Business', h(c.business_name))}${kv('Address', h(c.address))}${kv('Registered', date(c.created_at))}</div>`)}${panel('Portal access', 'Let this client sign in to the client portal', `<div class="activity-list">${links.map(l => `<div class="activity"><span class="activity-dot"></span><span><b>${h(l.profiles?.full_name || l.profiles?.email)}</b><div class="sub-cell">${h(l.profiles?.email)}</div></span><button class="button danger small-btn" data-action="unlink" data-user="${l.user_id}" data-client="${id}">Remove</button></div>`).join('') || '<div class="empty">No portal account linked.</div>'}</div>${c.archived_at ? '' : `<div class="link-row"><button class="button primary" data-action="invite-client" data-client="${id}">✉ Send portal invite to ${h(c.email)}</button></div>`}<div class="link-row"><input class="field" id="link-email" type="email" placeholder="Registered user's email"><button class="button primary" data-action="link-account" data-client="${id}">Link account</button></div><p class="sub-cell">Use “Send portal invite”, or link an account you already created.</p>`)}</div>${panel('Projects', '', tableHTML(['PROJECT', 'STATUS', 'DEADLINE', 'PROGRESS'], projects.map(p => `<tr><td><a class="name-cell" href="project-details.html?id=${p.id}">${h(p.title)}</a></td><td>${badge(p.status)}</td><td>${date(p.deadline)}</td><td>${p.progress}%</td></tr>`).join(''), 'No projects for this client yet.'))}${panel('Invoices', '', tableHTML(['INVOICE', 'DUE', 'TOTAL', 'BALANCE', 'STATUS'], invoices.map(i => `<tr><td><a class="name-cell" href="invoice-details.html?id=${i.id}">${invNo(i)}</a></td><td>${date(i.due_date)}</td><td>${money(i.total)}</td><td>${i.status === 'Void' ? '—' : money(balance(i))}</td><td>${badge(invStatus(i))}</td></tr>`).join(''), 'No invoices for this client yet.'))}`);
 }
 async function projectDetails() {
   const id = params.get('id');
@@ -281,8 +282,8 @@ const FORMS = {
 };
 
 const SUBMIT = {
-  async client(d) { d.email = d.email.toLowerCase(); must(await supabase.from('clients').insert(clean(d))); await logActivity('Created client', { name: d.name }); },
-  async project(d) { const row = clean(d); row.agreed_price = Number(d.agreed_price || 0); must(await supabase.from('projects').insert(row)); await logActivity('Created project', { title: d.title }); },
+  async client(d) { d.email = d.email.toLowerCase(); must(await supabase.from('clients').insert(clean(d))); },
+  async project(d) { const row = clean(d); row.agreed_price = Number(d.agreed_price || 0); must(await supabase.from('projects').insert(row)); },
   async task(d) { must(await supabase.from('project_tasks').insert(clean(d))); },
   async payment(d, form) {
     const amount = Number(d.amount), balance = Number(form.querySelector('[name=invoice_id] option:checked')?.dataset.balance ?? Infinity);
@@ -366,6 +367,41 @@ const ACTIONS = {
     const [i, items, payments] = await Promise.all([one('invoices', '*,clients(name,business_name,email,address),projects(title)', id), q('invoice_items', '*', r => r.eq('invoice_id', id)), q('payments', '*', r => r.eq('invoice_id', id))]);
     await downloadPDF('invoice', { number: invNo(i), status: invStatus(i), doc: i, items, payments, biz: state.biz, client: i.clients || {}, project: i.projects?.title });
   },
+  async 'pdf-client'(el) {
+    const id = el.dataset.id; toast('Preparing client report…');
+    const [client, projects, invoices] = await Promise.all([one('clients', '*', id), q('projects', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), q('invoices', '*', r => r.eq('client_id', id).order('created_at', { ascending: false }))]);
+    const ids = invoices.map(i => i.id);
+    const [payments, activity] = await Promise.all([ids.length ? q('payments', '*', r => r.in('invoice_id', ids).order('paid_at', { ascending: false })) : [], q('activity_logs', 'action,detail,created_at', r => r.eq('client_id', id).order('created_at', { ascending: false }).limit(25))]);
+    await downloadClientReport({ client, projects, invoices, payments, activity, biz: state.biz });
+  },
+  async 'pdf-monthly'() {
+    const month = $('#report-month')?.value;
+    if (!/^\d{4}-\d{2}$/.test(month || '')) return toast('Choose a month first.');
+    toast('Preparing monthly summary…');
+    const [y, mo] = month.split('-').map(Number);
+    const from = new Date(y, mo - 1, 1).toISOString(), to = new Date(y, mo, 1).toISOString();
+    const fromDay = `${month}-01`, toDay = new Date(y, mo, 1).toLocaleDateString('en-CA');
+    const inMonth = col => r => r.gte(col, from).lt(col, to);
+    const [clients, projects, invoices, payments, quotations, files, messages, logs, allInvoices, allPayments, active] = await Promise.all([
+      q('clients', '*', inMonth('created_at')), q('projects', '*', inMonth('created_at')),
+      q('invoices', '*', r => r.gte('issue_date', fromDay).lt('issue_date', toDay)),
+      q('payments', '*,invoices(client_id)', inMonth('paid_at')), q('quotations', 'id,status,client_id', inMonth('created_at')),
+      q('project_files', 'id', inMonth('created_at')), q('messages', 'id', inMonth('created_at')),
+      q('activity_logs', 'action', r => inMonth('created_at')(r).limit(5000)),
+      q('invoices', 'id,total,status'), q('payments', 'invoice_id,amount,verified'),
+      q('projects', '*', r => r.in('status', ['Confirmed', 'In Progress', 'Internal Review', 'Client Review', 'Revision Requested', 'Approved', 'Ready for Delivery']).order('deadline', { ascending: true, nullsFirst: false }))
+    ]);
+    const completed = await q('projects', '*', r => inMonth('updated_at')(r).eq('status', 'Completed'));
+    const names = Object.fromEntries((await q('clients', 'id,name')).map(c => [c.id, c.name]));
+    const { balance } = balances(allInvoices, allPayments);
+    const counts = {}; logs.forEach(l => { const k = l.action.replace(/^db\./, '').replace(/\./g, ' '); counts[k] = (counts[k] || 0) + 1; });
+    await downloadMonthlyReport({
+      month, label: new Date(y, mo - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }), biz: state.biz,
+      newClients: clients, projectsCreated: projects, projectsCompleted: completed, activeProjects: active, invoices,
+      payments: payments.map(p => ({ ...p, client_id: p.invoices?.client_id })), quotations, filesCount: files.length, messagesCount: messages.length,
+      activityCounts: counts, clientNames: names, snapshot: { outstanding: sum(allInvoices.filter(i => i.status !== 'Void'), balance) }
+    });
+  },
   async 'pdf-quote'(el) {
     const id = el.dataset.id; toast('Preparing PDF…');
     const [x, items] = await Promise.all([one('quotations', '*,clients(name,business_name,email,address),projects(title)', id), q('quotation_items', '*', r => r.eq('quotation_id', id))]);
@@ -391,9 +427,18 @@ const ACTIONS = {
   async 'toggle-visibility'(el) { must(await supabase.from('project_files').update({ visible_to_client: el.dataset.visible !== 'true' }).eq('id', el.dataset.id)); await refresh(); },
   async 'delete-file'(el) { if (!confirm('Delete this file permanently?')) return; must(await supabase.from('project_files').delete().eq('id', el.dataset.id)); await supabase.storage.from('project-files').remove([el.dataset.path]); toast('File deleted'); await refresh(); },
   async 'archive-client'(el) { must(await supabase.from('clients').update({ archived_at: el.dataset.archived === 'true' ? null : new Date().toISOString() }).eq('id', el.dataset.id)); await refresh(); },
+  async 'invite-client'(el) {
+    if (!confirm('Email a portal invitation to this client?')) return;
+    el.disabled = true;
+    try {
+      const { data, error } = await supabase.functions.invoke('invite-client', { body: { client_id: el.dataset.client } });
+      if (error) throw new Error((await error.context?.json?.().catch(() => null))?.error || error.message);
+      toast(data.invited ? 'Invitation emailed' : 'Existing account linked'); await refresh();
+    } finally { el.disabled = false; }
+  },
   async 'link-account'(el) {
     const email = $('#link-email').value.trim().toLowerCase(); if (!email) return toast('Enter the user’s email.');
-    const { data: prof, error } = await supabase.from('profiles').select('id,role').ilike('email', email).maybeSingle(); if (error) throw error;
+    const { data: prof, error } = await supabase.from('profiles').select('id,role').ilike('email', email.replace(/[\\%_]/g, '\\$&')).maybeSingle(); if (error) throw error;
     if (!prof) return toast('No registered user with that email. Create them in Supabase → Authentication → Users first.');
     if (prof.role !== 'client') return toast('That user is an admin, not a client account.');
     must(await supabase.from('client_users').insert({ client_id: el.dataset.client, user_id: prof.id })); toast('Account linked'); await refresh();
@@ -530,7 +575,6 @@ async function showBuilder(kind, preset = {}) {
         ? await supabase.rpc('create_invoice', { ...base, p_due: dateInput.value, p_terms: form.elements.payment_terms.value.trim() || null })
         : await supabase.rpc('create_quotation', { ...base, p_valid_until: dateInput.value || null });
       if (error) throw error;
-      await logActivity(isInv ? 'Created invoice' : 'Created quotation', { id: data.id });
       toast(isInv ? 'Invoice created' : 'Quotation created');
       location.href = `${isInv ? 'invoice' : 'quotation'}-details.html?id=${data.id}`;
     } catch (error) { err.textContent = error.message; save.disabled = false; save.textContent = label; }
@@ -583,6 +627,14 @@ async function run() {
   const { data: biz } = await supabase.from('business_settings').select('*').eq('id', true).maybeSingle();
   state.biz = biz || {}; setCurrency(state.biz.currency);
   if (!clientMode) { try { await supabase.rpc('sync_invoice_statuses'); } catch (_) { /* optional until upgrade.sql is applied */ } }
+  startIdleTimer();
   await refresh();
+}
+// Sign out after 30 minutes without interaction (shared computers, forgotten tabs).
+function startIdleTimer(limit = 30 * 60 * 1000) {
+  let t;
+  const reset = () => { clearTimeout(t); t = setTimeout(async () => { await supabase.auth.signOut(); location.href = `${clientMode ? '../client-login.html' : '../login.html'}?msg=idle`; }, limit); };
+  ['click', 'keydown', 'pointerdown', 'scroll', 'visibilitychange'].forEach(ev => addEventListener(ev, reset, { passive: true }));
+  reset();
 }
 run();

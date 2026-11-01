@@ -13,6 +13,10 @@ Static HTML/CSS/ES module application backed by Supabase (Auth, Postgres and pri
 
 ## Setup
 
+> **New in this version:** run `supabase/security.sql` (after the other SQL files) and follow `SECURITY.md`.
+> - `enquiry.html` is a public form: when someone submits their email, a client record is created in the database automatically.
+> - Admin → Client page: **Client report** PDF. Admin → Reports: **Monthly summary** PDF.
+
 > Upgrading an existing project? Run `supabase/fixes.sql`, then `supabase/upgrade.sql` (service presets, invoice/quotation functions, smarter statuses).
 >
 > Already created your database from an older version? Run `supabase/fixes.sql` once in the SQL Editor. It closes a privilege-escalation hole and fixes client file downloads.
