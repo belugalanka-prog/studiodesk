@@ -1,6 +1,6 @@
 import { supabase } from './supabase.js';
 import { requireUser, money, date, toast, escapeHTML as h, logActivity, setCurrency } from './common.js';
-import { downloadPDF } from './pdf.js';
+import { downloadPDF, downloadClientReport, downloadMonthlyReport } from './pdf.js';
 
 /* ---------- setup ---------- */
 const clientMode = document.body.dataset.role === 'client';
@@ -17,7 +17,7 @@ const PROJECT_STATUSES = ['New Enquiry', 'Quotation Sent', 'Awaiting Confirmatio
 const FILE_CATEGORIES = ['References', 'Original Photos', 'Raw Videos', 'Design Files', 'Previews', 'Edited Videos', 'Final Deliverables', 'Documents', 'Invoices', 'Receipts'];
 const QUOTE_STATUSES = ['Draft', 'Sent', 'Accepted', 'Declined', 'Expired'];
 
-const navAdmin = [['Dashboard', 'dashboard.html', '◫'], ['Clients', 'clients.html', '♙'], ['Projects', 'projects.html', '▣'], ['Tasks', 'tasks.html', '✓'], ['Quotations', 'quotations.html', '▤'], ['Services', 'services.html', '◈'], ['Invoices', 'invoices.html', '▧'], ['Payments', 'payments.html', '＄'], ['Files', 'files.html', '⌁'], ['Messages', 'messages.html', '✉'], ['Reports', 'reports.html', '▥'], ['Settings', 'settings.html', '⚙']];
+const navAdmin = [['Dashboard', 'dashboard.html', '◫'], ['Clients', 'clients.html', '♙'], ['Projects', 'projects.html', '▣'], ['Tasks', 'tasks.html', '✓'], ['Quotations', 'quotations.html', '▤'], ['Services', 'services.html', '◈'], ['Invoices', 'invoices.html', '▧'], ['Payments', 'payments.html', '＄'], ['Expenses', 'expenses.html', '⊖'], ['Calendar', 'calendar.html', '▦'], ['Files', 'files.html', '⌁'], ['Messages', 'messages.html', '✉'], ['Reports', 'reports.html', '▥'], ['Activity', 'activity.html', '⟲'], ['Settings', 'settings.html', '⚙']];
 const navClient = [['Overview', 'client-dashboard.html', '◫'], ['My projects', 'client-projects.html', '▣'], ['Files', 'client-files.html', '⌁'], ['Quotations', 'client-quotations.html', '▤'], ['Invoices', 'client-invoices.html', '▧'], ['Messages', 'client-messages.html', '✉'], ['My profile', 'client-profile.html', '♙']];
 const nav = clientMode ? navClient : navAdmin;
 const parentPage = { 'client-details': 'clients', 'project-details': 'projects', 'invoice-details': 'invoices', 'client-project-details': 'client-projects', 'client-invoice-details': 'client-invoices', 'quotation-details': 'quotations', 'client-quotation-details': 'client-quotations' };
@@ -41,6 +41,9 @@ const VIEWS = {
   files: { title: 'Files', sub: 'Project assets and client approved deliverables.', action: ['＋ Upload files', 'upload'], render: () => filesList() },
   messages: { title: 'Messages', sub: 'Project conversations in one place.', action: ['＋ New message', 'message'], render: () => messagesList() },
   reports: { title: 'Reports', sub: 'A clear view of your business activity.', render: () => reports() },
+  expenses: { title: 'Expenses', sub: 'Track costs so you can see real profit.', action: ['＋ Add expense', 'expense'], render: () => expensesList() },
+  calendar: { title: 'Calendar', sub: 'Deadlines, tasks, shoots and meetings.', render: () => calendarView() },
+  activity: { title: 'Activity log', sub: 'Everything that changed in your database.', render: () => activityList() },
   settings: { title: 'Settings', sub: 'Business details, currency and preferences.', render: () => settings() },
   'client-projects': { title: 'My projects', sub: 'Follow progress and deadlines for your projects.', render: () => projectsList() },
   'client-project-details': { title: 'Project', sub: 'Status, tasks, files and conversation.', render: () => projectDetails() },
@@ -143,7 +146,8 @@ async function dashboard() {
   const activities = projects.slice().sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 5).map(p => `<div class="activity"><span class="activity-dot"></span><span><b>${h(p.title)}</b> · ${h(p.status)}<time>${date(p.created_at)}</time></span></div>`).join('') || '<div class="empty">Your updates will appear here.</div>';
   content(`<div class="stats-grid">${stats}</div><div class="grid-two">${panel(clientMode ? 'Your projects' : 'Recent projects', 'Current progress and upcoming deadlines', tableHTML(['PROJECT', 'STATUS', 'DEADLINE', 'PROGRESS'], recent, 'No projects yet.'), `<a href="${clientMode ? 'client-projects.html' : 'projects.html'}">View all →</a>`)}${panel(clientMode ? 'Recent updates' : 'Revenue overview', clientMode ? 'Latest project activity' : 'Verified LKR payments · last six months', clientMode ? `<div class="activity-list">${activities}</div>` : revenueBars(payments))}</div>`);
 }
-async function reports() {
+async function reportsBase() {
+  setAction(`<input class="field" type="month" id="report-month" value="${today().slice(0, 7)}" max="${today().slice(0, 7)}" aria-label="Report month" style="width:auto"><button class="button primary" data-action="pdf-monthly">⬇ Monthly summary PDF</button>`);
   const [projects, invoices, payments] = await Promise.all([q('projects', 'id,status'), q('invoices', 'id,status,total,due_date,clients(name)'), q('payments', 'invoice_id,amount,verified,paid_at')]);
   const count = (arr, f) => arr.reduce((m, x) => { const k = f(x); m[k] = (m[k] || 0) + 1; return m; }, {});
   const rowsOf = (obj, cls) => Object.entries(obj).map(([k, v]) => `<tr><td>${cls ? badge(k) : h(k)}</td><td>${v}</td></tr>`).join('');
@@ -155,7 +159,7 @@ async function reports() {
 }
 
 /* ---------- lists ---------- */
-async function clientsList() {
+async function clientsListBase() {
   const [rows, projects] = await Promise.all([q('clients', '*', newest), q('projects', 'id,client_id')]);
   const n = {}; projects.forEach(p => { n[p.client_id] = (n[p.client_id] || 0) + 1; });
   content(dataTable({ headers: ['CLIENT', 'EMAIL', 'PHONE', 'PROJECTS', 'STATUS', 'REGISTERED'], rows, placeholder: 'Search clients…', status: r => r.archived_at ? 'Archived' : 'Active', search: r => [r.name, r.business_name, r.email, r.phone].join(' '), row: r => `<tr><td><a class="name-cell" href="client-details.html?id=${r.id}">${h(r.name)}</a><div class="sub-cell">${h(r.business_name)}</div></td><td>${h(r.email)}</td><td>${h(r.phone || '—')}</td><td>${n[r.id] || 0}</td><td>${r.archived_at ? '<span class="badge">Archived</span>' : '<span class="badge green">Active</span>'}</td><td>${date(r.created_at)}</td></tr>` }));
@@ -176,13 +180,13 @@ async function quotationsList() {
   const eff = r => (['Sent'].includes(r.status) && r.valid_until && r.valid_until < today()) ? 'Expired' : r.status;
   content(dataTable({ headers: ['QUOTE', 'CLIENT', 'DATE', 'VALID UNTIL', 'TOTAL', 'STATUS'], rows, placeholder: 'Search quotations…', status: eff, search: r => [qNo(r), r.clients?.name].join(' '), row: r => `<tr><td><a class="name-cell" href="${base}?id=${r.id}">${qNo(r)}</a></td><td>${h(r.clients?.name)}</td><td>${date(r.created_at)}</td><td>${date(r.valid_until)}</td><td>${money(r.total)}</td><td>${badge(eff(r))}</td></tr>` }));
 }
-async function invoicesList() {
+async function invoicesListBase() {
   const [rows, payments] = await Promise.all([q('invoices', '*,clients(name)', newest), q('payments', 'invoice_id,amount,verified')]);
   const { balance } = balances(rows, payments);
   const base = clientMode ? 'client-invoice-details.html' : 'invoice-details.html';
   content(dataTable({ headers: ['INVOICE', 'CLIENT', 'DATE', 'DUE', 'TOTAL', 'BALANCE', 'STATUS'], rows, placeholder: 'Search invoices…', status: invStatus, search: r => [invNo(r), r.clients?.name].join(' '), row: r => `<tr><td><a class="name-cell" href="${base}?id=${r.id}">${invNo(r)}</a></td><td>${h(r.clients?.name)}</td><td>${date(r.issue_date)}</td><td>${date(r.due_date)}</td><td>${money(r.total)}</td><td>${r.status === 'Void' ? '—' : money(balance(r))}</td><td>${badge(invStatus(r))}</td></tr>` }));
 }
-async function paymentsList() {
+async function paymentsListBase() {
   const rows = await q('payments', '*,invoices(invoice_number,clients(name))', r => r.order('paid_at', { ascending: false }));
   content(dataTable({ headers: ['RECEIPT', 'INVOICE', 'CLIENT', 'DATE', 'METHOD', 'AMOUNT', 'STATUS'], rows, placeholder: 'Search payments…', status: r => r.verified ? 'Verified' : 'Pending', search: r => [r.invoices?.clients?.name, r.reference, r.method, invNo(r.invoices || {})].join(' '), row: r => `<tr><td class="name-cell">${h(r.reference || r.id.slice(0, 8))}</td><td>${r.invoices ? `<a href="invoice-details.html?id=${r.invoice_id}">${invNo(r.invoices)}</a>` : '—'}</td><td>${h(r.invoices?.clients?.name)}</td><td>${date(r.paid_at)}</td><td>${h(r.method)}</td><td>${money(r.amount)}</td><td><span class="badge ${r.verified ? 'green' : 'orange'}">${r.verified ? 'Verified' : 'Pending'}</span></td></tr>` }));
 }
@@ -199,7 +203,7 @@ async function messagesList() {
 }
 
 /* ---------- settings & profile ---------- */
-async function settings() {
+async function settingsBase() {
   const { data: b, error } = await supabase.from('business_settings').select('*').eq('id', true).maybeSingle();
   if (error) throw error;
   if (!b) { content('<div class="panel empty">No settings row found. Run <code>insert into public.business_settings(id) values(true);</code> in the SQL editor.</div>'); return; }
@@ -219,12 +223,12 @@ async function clientDetails() {
   const c = id && await one('clients', '*', id);
   if (!c) { content(`<div class="panel empty">Client not found. ${back('clients.html', 'Back to clients')}</div>`); return; }
   setHead(c.name, c.business_name || 'Client details');
-  setAction(`${back('clients.html', 'Clients')}<button class="button" data-action="archive-client" data-id="${c.id}" data-archived="${!!c.archived_at}">${c.archived_at ? 'Restore client' : 'Archive client'}</button><button class="button" data-create="quote" data-client="${c.id}">＋ Quotation</button><button class="button" data-create="invoice" data-client="${c.id}">＋ Invoice</button><button class="button primary" data-create="project" data-client="${c.id}">＋ New project</button>`);
+  setAction(`${back('clients.html', 'Clients')}<button class="button" data-action="archive-client" data-id="${c.id}" data-archived="${!!c.archived_at}">${c.archived_at ? 'Restore client' : 'Archive client'}</button><button class="button" data-action="pdf-client" data-id="${c.id}">⬇ Client report</button><button class="button" data-create="quote" data-client="${c.id}">＋ Quotation</button><button class="button" data-create="invoice" data-client="${c.id}">＋ Invoice</button><button class="button primary" data-create="project" data-client="${c.id}">＋ New project</button>`);
   const [projects, invoices, payments, links] = await Promise.all([q('projects', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), q('invoices', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), q('payments', 'invoice_id,amount,verified'), q('client_users', 'user_id,profiles(full_name,email)', r => r.eq('client_id', id))]);
   const { balance } = balances(invoices, payments);
-  content(`<div class="grid-two">${panel('Contact', c.archived_at ? 'Archived' : 'Active client', `<div class="kvs">${kv('Email', h(c.email))}${kv('Phone', h(c.phone))}${kv('Business', h(c.business_name))}${kv('Address', h(c.address))}${kv('Registered', date(c.created_at))}</div>`)}${panel('Portal access', 'Let this client sign in to the client portal', `<div class="activity-list">${links.map(l => `<div class="activity"><span class="activity-dot"></span><span><b>${h(l.profiles?.full_name || l.profiles?.email)}</b><div class="sub-cell">${h(l.profiles?.email)}</div></span><button class="button danger small-btn" data-action="unlink" data-user="${l.user_id}" data-client="${id}">Remove</button></div>`).join('') || '<div class="empty">No portal account linked.</div>'}</div><div class="link-row"><input class="field" id="link-email" type="email" placeholder="Registered user's email"><button class="button primary" data-action="link-account" data-client="${id}">Link account</button></div><p class="sub-cell">Create the user first in Supabase → Authentication → Users, then link their email here.</p>`)}</div>${panel('Projects', '', tableHTML(['PROJECT', 'STATUS', 'DEADLINE', 'PROGRESS'], projects.map(p => `<tr><td><a class="name-cell" href="project-details.html?id=${p.id}">${h(p.title)}</a></td><td>${badge(p.status)}</td><td>${date(p.deadline)}</td><td>${p.progress}%</td></tr>`).join(''), 'No projects for this client yet.'))}${panel('Invoices', '', tableHTML(['INVOICE', 'DUE', 'TOTAL', 'BALANCE', 'STATUS'], invoices.map(i => `<tr><td><a class="name-cell" href="invoice-details.html?id=${i.id}">${invNo(i)}</a></td><td>${date(i.due_date)}</td><td>${money(i.total)}</td><td>${i.status === 'Void' ? '—' : money(balance(i))}</td><td>${badge(invStatus(i))}</td></tr>`).join(''), 'No invoices for this client yet.'))}`);
+  content(`<div class="grid-two">${panel('Contact', c.archived_at ? 'Archived' : 'Active client', `<div class="kvs">${kv('Email', h(c.email))}${kv('Phone', h(c.phone))}${kv('Business', h(c.business_name))}${kv('Address', h(c.address))}${kv('Registered', date(c.created_at))}</div>`)}${panel('Portal access', 'Let this client sign in to the client portal', `<div class="activity-list">${links.map(l => `<div class="activity"><span class="activity-dot"></span><span><b>${h(l.profiles?.full_name || l.profiles?.email)}</b><div class="sub-cell">${h(l.profiles?.email)}</div></span><button class="button danger small-btn" data-action="unlink" data-user="${l.user_id}" data-client="${id}">Remove</button></div>`).join('') || '<div class="empty">No portal account linked.</div>'}</div>${c.archived_at ? '' : `<div class="link-row"><button class="button primary" data-action="invite-client" data-client="${id}">✉ Send portal invite to ${h(c.email)}</button></div>`}<div class="link-row"><input class="field" id="link-email" type="email" placeholder="Registered user's email"><button class="button primary" data-action="link-account" data-client="${id}">Link account</button></div><p class="sub-cell">Use “Send portal invite”, or link an account you already created.</p>`)}</div>${panel('Projects', '', tableHTML(['PROJECT', 'STATUS', 'DEADLINE', 'PROGRESS'], projects.map(p => `<tr><td><a class="name-cell" href="project-details.html?id=${p.id}">${h(p.title)}</a></td><td>${badge(p.status)}</td><td>${date(p.deadline)}</td><td>${p.progress}%</td></tr>`).join(''), 'No projects for this client yet.'))}${panel('Invoices', '', tableHTML(['INVOICE', 'DUE', 'TOTAL', 'BALANCE', 'STATUS'], invoices.map(i => `<tr><td><a class="name-cell" href="invoice-details.html?id=${i.id}">${invNo(i)}</a></td><td>${date(i.due_date)}</td><td>${money(i.total)}</td><td>${i.status === 'Void' ? '—' : money(balance(i))}</td><td>${badge(invStatus(i))}</td></tr>`).join(''), 'No invoices for this client yet.'))}`);
 }
-async function projectDetails() {
+async function projectDetailsBase() {
   const id = params.get('id');
   const p = id && await one('projects', '*,clients(name)', id);
   const listPage = clientMode ? 'client-projects.html' : 'projects.html';
@@ -235,7 +239,7 @@ async function projectDetails() {
   const controls = clientMode ? '' : `<div class="form-grid control-row"><label>Status<select class="field" data-change="project-status" data-id="${p.id}">${options(PROJECT_STATUSES, p.status)}</select></label><label>Progress (%)<span class="inline-row"><input class="field" id="progress-input" type="number" min="0" max="100" value="${p.progress}"><button class="button" data-action="set-progress" data-id="${p.id}">Update</button></span></label></div>`;
   content(`${panel('Overview', '', `<div class="kvs kv-wide">${kv('Status', badge(p.status))}${kv('Category', h(p.category))}${kv('Priority', h(p.priority))}${kv('Deadline', date(p.deadline))}${clientMode ? '' : kv('Agreed price', money(p.agreed_price))}${kv('Progress', `${p.progress}%`)}</div><div class="progress big"><span style="width:${p.progress}%"></span></div>${p.description ? `<p class="desc">${h(p.description)}</p>` : ''}${controls}`)}<div class="grid-two">${panel('Tasks', `${tasks.filter(t => t.completed).length} of ${tasks.length} complete`, tableHTML(['TASK', 'DUE', 'STATUS'], tasks.map(t => `<tr><td class="name-cell">${h(t.title)}</td><td>${date(t.due_date)}</td><td>${taskButton(t)}</td></tr>`).join(''), 'No tasks yet.'), clientMode ? '' : `<button class="button" data-action="add-checklist" data-id="${p.id}" data-category="${h(p.category)}">＋ Standard checklist</button>`)}${panel('Messages', '', `<div class="activity-list">${msgs.map(m => `<div class="activity"><span class="activity-dot"></span><span><b>${m.sender_id === state.user.id ? 'You' : h(m.profiles?.full_name || (clientMode ? 'Studio team' : 'Client'))}</b><div class="msg-body">${h(m.body)}</div><time>${new Date(m.created_at).toLocaleString()}</time></span></div>`).join('') || '<div class="empty">No messages yet.</div>'}</div>`)}</div>${panel('Files', '', tableHTML(['FILE', 'CATEGORY', 'VISIBILITY', 'ADDED', ''], fileRows(files, false), 'No files yet.'))}`);
 }
-async function invoiceDetails() {
+async function invoiceDetailsBase() {
   const id = params.get('id');
   const i = id && await one('invoices', '*,clients(name,email,address),projects(title)', id);
   const listPage = clientMode ? 'client-invoices.html' : 'invoices.html';
@@ -281,8 +285,8 @@ const FORMS = {
 };
 
 const SUBMIT = {
-  async client(d) { d.email = d.email.toLowerCase(); must(await supabase.from('clients').insert(clean(d))); await logActivity('Created client', { name: d.name }); },
-  async project(d) { const row = clean(d); row.agreed_price = Number(d.agreed_price || 0); must(await supabase.from('projects').insert(row)); await logActivity('Created project', { title: d.title }); },
+  async client(d) { d.email = d.email.toLowerCase(); must(await supabase.from('clients').insert(clean(d))); },
+  async project(d) { const row = clean(d); row.agreed_price = Number(d.agreed_price || 0); must(await supabase.from('projects').insert(row)); },
   async task(d) { must(await supabase.from('project_tasks').insert(clean(d))); },
   async payment(d, form) {
     const amount = Number(d.amount), balance = Number(form.querySelector('[name=invoice_id] option:checked')?.dataset.balance ?? Infinity);
@@ -366,6 +370,42 @@ const ACTIONS = {
     const [i, items, payments] = await Promise.all([one('invoices', '*,clients(name,business_name,email,address),projects(title)', id), q('invoice_items', '*', r => r.eq('invoice_id', id)), q('payments', '*', r => r.eq('invoice_id', id))]);
     await downloadPDF('invoice', { number: invNo(i), status: invStatus(i), doc: i, items, payments, biz: state.biz, client: i.clients || {}, project: i.projects?.title });
   },
+  async 'pdf-client'(el) {
+    const id = el.dataset.id; toast('Preparing client report…');
+    const [client, projects, invoices] = await Promise.all([one('clients', '*', id), q('projects', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), q('invoices', '*', r => r.eq('client_id', id).order('created_at', { ascending: false }))]);
+    const ids = invoices.map(i => i.id);
+    const [payments, activity] = await Promise.all([ids.length ? q('payments', '*', r => r.in('invoice_id', ids).order('paid_at', { ascending: false })) : [], q('activity_logs', 'action,detail,created_at', r => r.eq('client_id', id).order('created_at', { ascending: false }).limit(25))]);
+    await downloadClientReport({ client, projects, invoices, payments, activity, biz: state.biz });
+  },
+  async 'pdf-monthly'() {
+    const month = $('#report-month')?.value;
+    if (!/^\d{4}-\d{2}$/.test(month || '')) return toast('Choose a month first.');
+    toast('Preparing monthly summary…');
+    const [y, mo] = month.split('-').map(Number);
+    const from = new Date(y, mo - 1, 1).toISOString(), to = new Date(y, mo, 1).toISOString();
+    const fromDay = `${month}-01`, toDay = new Date(y, mo, 1).toLocaleDateString('en-CA');
+    const inMonth = col => r => r.gte(col, from).lt(col, to);
+    const [clients, projects, invoices, payments, quotations, files, messages, logs, expenses, allInvoices, allPayments, active] = await Promise.all([
+      q('clients', '*', inMonth('created_at')), q('projects', '*', inMonth('created_at')),
+      q('invoices', '*', r => r.gte('issue_date', fromDay).lt('issue_date', toDay)),
+      q('payments', '*,invoices(client_id)', inMonth('paid_at')), q('quotations', 'id,status,client_id', inMonth('created_at')),
+      q('project_files', 'id', inMonth('created_at')), q('messages', 'id', inMonth('created_at')),
+      q('activity_logs', 'action', r => inMonth('created_at')(r).limit(5000)),
+      q('expenses', '*', r => r.gte('spent_on', fromDay).lt('spent_on', toDay).order('spent_on')),
+      q('invoices', 'id,total,status'), q('payments', 'invoice_id,amount,verified'),
+      q('projects', '*', r => r.in('status', ['Confirmed', 'In Progress', 'Internal Review', 'Client Review', 'Revision Requested', 'Approved', 'Ready for Delivery']).order('deadline', { ascending: true, nullsFirst: false }))
+    ]);
+    const completed = await q('projects', '*', r => inMonth('updated_at')(r).eq('status', 'Completed'));
+    const names = Object.fromEntries((await q('clients', 'id,name')).map(c => [c.id, c.name]));
+    const { balance } = balances(allInvoices, allPayments);
+    const counts = {}; logs.forEach(l => { const k = l.action.replace(/^db\./, '').replace(/\./g, ' '); counts[k] = (counts[k] || 0) + 1; });
+    await downloadMonthlyReport({
+      month, label: new Date(y, mo - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }), biz: state.biz,
+      expenses, newClients: clients, projectsCreated: projects, projectsCompleted: completed, activeProjects: active, invoices,
+      payments: payments.map(p => ({ ...p, client_id: p.invoices?.client_id })), quotations, filesCount: files.length, messagesCount: messages.length,
+      activityCounts: counts, clientNames: names, snapshot: { outstanding: sum(allInvoices.filter(i => i.status !== 'Void'), balance) }
+    });
+  },
   async 'pdf-quote'(el) {
     const id = el.dataset.id; toast('Preparing PDF…');
     const [x, items] = await Promise.all([one('quotations', '*,clients(name,business_name,email,address),projects(title)', id), q('quotation_items', '*', r => r.eq('quotation_id', id))]);
@@ -391,9 +431,18 @@ const ACTIONS = {
   async 'toggle-visibility'(el) { must(await supabase.from('project_files').update({ visible_to_client: el.dataset.visible !== 'true' }).eq('id', el.dataset.id)); await refresh(); },
   async 'delete-file'(el) { if (!confirm('Delete this file permanently?')) return; must(await supabase.from('project_files').delete().eq('id', el.dataset.id)); await supabase.storage.from('project-files').remove([el.dataset.path]); toast('File deleted'); await refresh(); },
   async 'archive-client'(el) { must(await supabase.from('clients').update({ archived_at: el.dataset.archived === 'true' ? null : new Date().toISOString() }).eq('id', el.dataset.id)); await refresh(); },
+  async 'invite-client'(el) {
+    if (!confirm('Email a portal invitation to this client?')) return;
+    el.disabled = true;
+    try {
+      const { data, error } = await supabase.functions.invoke('invite-client', { body: { client_id: el.dataset.client } });
+      if (error) throw new Error((await error.context?.json?.().catch(() => null))?.error || error.message);
+      toast(data.invited ? 'Invitation emailed' : 'Existing account linked'); await refresh();
+    } finally { el.disabled = false; }
+  },
   async 'link-account'(el) {
     const email = $('#link-email').value.trim().toLowerCase(); if (!email) return toast('Enter the user’s email.');
-    const { data: prof, error } = await supabase.from('profiles').select('id,role').ilike('email', email).maybeSingle(); if (error) throw error;
+    const { data: prof, error } = await supabase.from('profiles').select('id,role').ilike('email', email.replace(/[\\%_]/g, '\\$&')).maybeSingle(); if (error) throw error;
     if (!prof) return toast('No registered user with that email. Create them in Supabase → Authentication → Users first.');
     if (prof.role !== 'client') return toast('That user is an admin, not a client account.');
     must(await supabase.from('client_users').insert({ client_id: el.dataset.client, user_id: prof.id })); toast('Account linked'); await refresh();
@@ -421,7 +470,7 @@ const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(
 document.addEventListener('click', guard(async e => {
   const create = e.target.closest('[data-create]');
   if (create) {
-    const d = create.dataset, preset = { client_id: d.client, project_id: d.project, invoice_id: d.invoice };
+    const d = create.dataset, preset = { client_id: d.client, project_id: d.project, invoice_id: d.invoice, values: d.balance ? { amount: d.balance } : undefined };
     return ['invoice', 'quote'].includes(d.create) ? await showBuilder(d.create, preset) : showModal(d.create, preset);
   }
   const el = e.target.closest('[data-action]');
@@ -530,7 +579,6 @@ async function showBuilder(kind, preset = {}) {
         ? await supabase.rpc('create_invoice', { ...base, p_due: dateInput.value, p_terms: form.elements.payment_terms.value.trim() || null })
         : await supabase.rpc('create_quotation', { ...base, p_valid_until: dateInput.value || null });
       if (error) throw error;
-      await logActivity(isInv ? 'Created invoice' : 'Created quotation', { id: data.id });
       toast(isInv ? 'Invoice created' : 'Quotation created');
       location.href = `${isInv ? 'invoice' : 'quotation'}-details.html?id=${data.id}`;
     } catch (error) { err.textContent = error.message; save.disabled = false; save.textContent = label; }
@@ -563,6 +611,183 @@ async function quotationDetails() {
   content(`<div class="panel invoice-sheet"><div class="inv-head"><div><h2>${h(state.biz.business_name || 'StudioDesk')}</h2><p class="sub-cell">${h(state.biz.address)}<br>${h(state.biz.email)} ${h(state.biz.phone)}</p></div><div class="inv-meta"><b>${qNo(x)}</b><div>${badge(status)}</div><div class="sub-cell">Created ${date(x.created_at)} · Valid until ${date(x.valid_until)}</div></div></div><div class="kvs kv-wide">${kv('Prepared for', h(x.clients?.name))}${kv('Email', h(x.clients?.email))}${kv('Project', h(x.projects?.title))}${live ? kv('Invoice', `<a href="${clientMode ? 'client-' : ''}invoice-details.html?id=${live.id}">${invNo(live)}</a>`) : ''}</div>${tableHTML(['DESCRIPTION', 'QTY', 'UNIT PRICE', 'AMOUNT'], items.map(i => `<tr><td>${h(i.description)}</td><td>${i.quantity}</td><td>${money(i.unit_price)}</td><td>${money(i.quantity * i.unit_price)}</td></tr>`).join(''), 'No line items.')}<div class="totals"><div><span>Subtotal</span><b>${money(x.subtotal)}</b></div>${Number(x.discount) ? `<div><span>Discount</span><b>−${money(x.discount)}</b></div>` : ''}${Number(x.tax_rate) ? `<div><span>Tax (${x.tax_rate}%)</span><b>${money(x.total - (x.subtotal - x.discount))}</b></div>` : ''}<div class="grand"><span>Total</span><b>${money(x.total)}</b></div></div>${x.notes ? `<p class="desc notes">${h(x.notes)}</p>` : ''}</div>`);
 }
 
+/* ---------- extras: CSV export, expenses, calendar, activity, bank slips, revisions, security ---------- */
+const csvCell = v => { let s = v === null || v === undefined ? '' : String(v); if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };   // leading ' stops spreadsheet formula injection
+function downloadCSV(name, headers, rows) {
+  const text = '﻿' + [headers, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' })); a.download = `${name}-${today()}.csv`;
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+}
+const addExport = what => $('#page-action')?.insertAdjacentHTML('beforeend', `<button class="button" data-action="export" data-what="${what}">⬇ Export CSV</button>`);
+const clientsList = async () => { await clientsListBase(); addExport('clients'); };
+const invoicesList = async () => { await invoicesListBase(); if (!clientMode) addExport('invoices'); };
+
+/* ----- expenses ----- */
+const EXPENSE_CATEGORIES = ['Equipment', 'Software', 'Freelancer', 'Travel', 'Marketing', 'Rent & utilities', 'Other'];
+async function expensesList() {
+  const [rows, payments] = await Promise.all([q('expenses', '*,projects(title)', r => r.order('spent_on', { ascending: false }).order('created_at', { ascending: false })), q('payments', 'amount,verified,paid_at')]);
+  const mk = today().slice(0, 7), yr = today().slice(0, 4);
+  const spent = sum(rows.filter(x => x.spent_on.slice(0, 7) === mk), x => x.amount);
+  const income = sum(payments.filter(p => p.verified && p.paid_at && monthKey(p.paid_at) === mk), p => p.amount);
+  const stats = stat('Spent this month', money(spent), 'Expenses recorded', '⊖') + stat('Income this month', money(income), 'Verified payments', '＄') + stat('Profit this month', money(income - spent), income - spent < 0 ? 'Spending exceeds income' : 'Income minus expenses', '▥') + stat('Spent this year', money(sum(rows.filter(x => x.spent_on.startsWith(yr)), x => x.amount)), yr, '◷');
+  content(`<div class="stats-grid">${stats}</div>` + dataTable({ headers: ['DATE', 'DESCRIPTION', 'CATEGORY', 'VENDOR', 'PROJECT', 'AMOUNT', ''], rows, placeholder: 'Search expenses…', status: r => r.category, search: r => [r.description, r.vendor, r.category, r.projects?.title].join(' '), empty: 'No expenses yet. Use “Add expense” to start tracking costs.',
+    row: r => `<tr><td>${date(r.spent_on)}</td><td class="name-cell">${h(r.description)}</td><td>${h(r.category)}</td><td>${h(r.vendor || '—')}</td><td>${h(r.projects?.title || '—')}</td><td>${money(r.amount)}</td><td class="row-actions"><button class="button danger" data-action="delete-expense" data-id="${r.id}">Delete</button></td></tr>` }));
+  addExport('expenses');
+}
+
+/* ----- calendar ----- */
+let calMonth = new Date(); calMonth.setDate(1);
+async function calendarView() {
+  const y = calMonth.getFullYear(), m = calMonth.getMonth(), first = new Date(y, m, 1), last = new Date(y, m + 1, 0);
+  const ymd = d => d.toLocaleDateString('en-CA'), fromDay = ymd(first), toDay = ymd(last);
+  const [projects, tasks, events] = await Promise.all([
+    q('projects', 'id,title,deadline,status', r => r.gte('deadline', fromDay).lte('deadline', toDay).is('archived_at', null)),
+    q('project_tasks', 'id,title,due_date,project_id,projects(title)', r => r.gte('due_date', fromDay).lte('due_date', toDay).eq('completed', false)),
+    q('calendar_events', '*', r => r.gte('starts_at', first.toISOString()).lt('starts_at', new Date(y, m + 1, 1).toISOString()).order('starts_at'))]);
+  const byDay = {}, add = (d, html) => { (byDay[d] = byDay[d] || []).push(html); };
+  projects.filter(p => !['Completed', 'Cancelled'].includes(p.status)).forEach(p => add(p.deadline, `<a class="cal-item deadline" href="project-details.html?id=${p.id}" title="Project deadline">⚑ ${h(p.title)}</a>`));
+  tasks.forEach(t => add(t.due_date, `<a class="cal-item task" href="project-details.html?id=${t.project_id}" title="${h(t.projects?.title)}">✓ ${h(t.title)}</a>`));
+  events.forEach(e => add(ymd(new Date(e.starts_at)), `<span class="cal-item event" title="${h([e.kind, e.location, e.notes].filter(Boolean).join(' · '))}"><b>${new Date(e.starts_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</b> ${h(e.title)}<button class="cal-x" data-action="delete-event" data-id="${e.id}" title="Delete event" aria-label="Delete event">×</button></span>`));
+  const label = first.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  setAction(`<button class="button" data-action="cal-nav" data-step="-1" aria-label="Previous month">‹</button><b class="cal-label">${label}</b><button class="button" data-action="cal-nav" data-step="1" aria-label="Next month">›</button><button class="button" data-action="cal-nav" data-step="0">Today</button><button class="button primary" data-create="event">＋ Add event</button>`);
+  const cells = [...Array(first.getDay()).fill('<div class="cal-cell blank"></div>')];
+  for (let d = 1; d <= last.getDate(); d++) { const key = ymd(new Date(y, m, d)); cells.push(`<div class="cal-cell ${key === today() ? 'today' : ''}"><span class="cal-day">${d}</span>${(byDay[key] || []).join('')}</div>`); }
+  content(`<div class="panel"><div class="cal-grid">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => `<div class="cal-head">${d}</div>`).join('')}${cells.join('')}</div><p class="sub-cell">⚑ project deadline · ✓ open task · shoots and meetings you add. A daily reminder is created for deadlines in the next 2 days.</p></div>`);
+}
+
+/* ----- activity log ----- */
+const describeLog = a => {
+  const d = a.detail || {};
+  const ch = d.changed ? Object.entries(d.changed).map(([k, v]) => v && typeof v === 'object' ? `${k}: ${v.from ?? '—'} → ${v.to ?? '—'}` : k).join(', ') : '';
+  return [d.label, ch && `changed ${ch}`, d.message, d.email, d.title, d.name].filter(Boolean).join(' · ');
+};
+async function activityList() {
+  const rows = await q('activity_logs', 'id,action,detail,created_at,actor_id,profiles(full_name,email)', r => r.order('created_at', { ascending: false }).limit(500));
+  const area = r => r.action.startsWith('db.') ? r.action.split('.')[1] : (/website/i.test(r.action) ? 'website' : 'app');
+  content(dataTable({ headers: ['WHEN', 'WHO', 'EVENT', 'DETAIL'], rows, placeholder: 'Search the activity log…', status: area, search: r => [r.action, describeLog(r), r.profiles?.full_name, r.profiles?.email].join(' '), empty: 'No activity recorded yet.',
+    row: r => `<tr><td>${h(new Date(r.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }))}</td><td>${h(r.profiles?.full_name || r.profiles?.email || 'Website / system')}</td><td class="name-cell">${h(r.action.replace(/^db\./, '').replace(/\./g, ' '))}</td><td>${h(describeLog(r) || '—')}</td></tr>` }));
+  $('#page-sub').textContent = 'The latest 500 changes recorded in your database.';
+}
+
+/* ----- bank slips ----- */
+const slipLabel = s => s === 'Rejected' ? 'Declined' : s;
+const slipName = path => path.split('/').pop().replace(/^[0-9a-f-]{36}-/, '');
+const slipButtons = s => `<button class="button" data-action="slip-view" data-path="${h(s.storage_path)}">View slip</button>${!clientMode && s.status === 'Pending' ? `<button class="button primary" data-action="slip-review" data-id="${s.id}" data-approve="true">Approve</button><button class="button danger" data-action="slip-review" data-id="${s.id}" data-approve="false">Reject</button>` : ''}`;
+async function slipsPanel(invoice, bal) {
+  const slips = await q('payment_slips', '*', r => r.eq('invoice_id', invoice.id).order('created_at', { ascending: false }));
+  const canPay = clientMode && bal > 0 && invoice.status !== 'Void';
+  if (!slips.length && !canPay) return;
+  const rows = slips.map(s => `<tr><td>${date(s.created_at)}</td><td>${money(s.amount)}</td><td>${h(s.reference || '—')}</td><td>${badge(slipLabel(s.status))}${s.review_note ? `<div class="sub-cell">${h(s.review_note)}</div>` : ''}</td><td class="row-actions">${slipButtons(s)}</td></tr>`).join('');
+  const bank = clientMode && state.biz.bank_details && bal > 0 ? `<div class="kvs">${kv('Bank details', `<span style="white-space:pre-line">${h(state.biz.bank_details)}</span>`)}</div>` : '';
+  $('#content').insertAdjacentHTML('beforeend', panel('Bank transfer slips', clientMode ? 'Paid by bank transfer? Upload the slip and we will confirm your payment.' : 'Slips uploaded by the client', bank + tableHTML(['DATE', 'AMOUNT', 'REFERENCE', 'STATUS', ''], rows, 'No slips uploaded yet.'), canPay ? `<button class="button primary" data-create="slip" data-invoice="${invoice.id}" data-balance="${bal}">Upload bank slip</button>` : ''));
+}
+const invoiceDetails = async () => {
+  await invoiceDetailsBase();
+  const id = params.get('id'); if (!id || !$('.invoice-sheet')) return;
+  const [i, pay] = await Promise.all([one('invoices', 'id,status,total', id), q('payments', 'amount,verified', r => r.eq('invoice_id', id))]);
+  if (i) await slipsPanel(i, Math.max(0, Number(i.total) - sum(pay.filter(p => p.verified), p => p.amount)));
+};
+const paymentsList = async () => {
+  await paymentsListBase();
+  const slips = await q('payment_slips', '*,invoices(invoice_number,clients(name))', r => r.eq('status', 'Pending').order('created_at'));
+  if (!slips.length) return;
+  $('#content').insertAdjacentHTML('afterbegin', panel('Bank slips waiting for review', `${slips.length} to check`, tableHTML(['DATE', 'CLIENT', 'INVOICE', 'AMOUNT', 'REFERENCE', ''], slips.map(s => `<tr><td>${date(s.created_at)}</td><td>${h(s.invoices?.clients?.name)}</td><td><a href="invoice-details.html?id=${s.invoice_id}">${invNo(s.invoices || {})}</a></td><td>${money(s.amount)}</td><td>${h(s.reference || '—')}</td><td class="row-actions">${slipButtons(s)}</td></tr>`).join(''), '')));
+  addExport('payments');
+};
+
+/* ----- revisions & approvals ----- */
+const NO_REVISION = ['New Enquiry', 'Quotation Sent', 'Awaiting Confirmation', 'Completed', 'Cancelled', 'On Hold'];
+const projectDetails = async () => { await projectDetailsBase(); await revisionsPanel(); };
+async function revisionsPanel() {
+  const id = params.get('id'); if (!id || !$('.progress.big')) return;
+  const [p, rows] = await Promise.all([one('projects', 'id,status,included_revisions', id), q('revision_requests', '*', r => r.eq('project_id', id).order('created_at', { ascending: false }))]);
+  if (!p) return;
+  const used = rows.filter(r => r.kind === 'Changes requested').length, extra = Math.max(0, used - p.included_revisions);
+  const summary = `<p class="desc"><b>${used}</b> of <b>${p.included_revisions}</b> included revision rounds used.${extra ? ` ${clientMode ? 'Further rounds may be charged.' : `<span class="badge red">${extra} extra round${extra > 1 ? 's' : ''} – consider billing</span>`}` : ''}</p>`;
+  const body = rows.map(r => `<tr><td>${date(r.created_at)}</td><td>${r.kind === 'Approved' ? badge('Approved') : `Round ${r.round}`}</td><td>${h(r.comment || '—')}</td><td>${r.kind === 'Approved' ? '' : `<span class="badge ${r.status === 'Open' ? 'orange' : 'green'}">${r.status}</span>`}</td><td class="row-actions">${!clientMode && r.kind !== 'Approved' && r.status === 'Open' ? `<button class="button" data-action="address-revision" data-id="${r.id}">Mark addressed</button>` : ''}</td></tr>`).join('');
+  const extraBtn = clientMode
+    ? `${NO_REVISION.includes(p.status) ? '' : `<button class="button" data-create="revision" data-project="${id}">Request changes</button>`}${['Client Review', 'Ready for Delivery'].includes(p.status) ? `<button class="button primary" data-action="approve-project" data-id="${id}">Approve</button>` : ''}`
+    : `<button class="button" data-action="set-included" data-id="${id}" data-n="${p.included_revisions}">Included rounds: ${p.included_revisions} ✎</button>`;
+  $('#content').insertAdjacentHTML('beforeend', panel('Revisions & approval', clientMode ? 'Ask for changes or approve the work' : 'Client change requests and approvals', summary + tableHTML(['DATE', 'TYPE', 'COMMENT', 'STATUS', ''], body, 'No change requests yet.'), extraBtn));
+}
+
+/* ----- reports: profit, security panel ----- */
+const reports = async () => {
+  await reportsBase();
+  const [payments, expenses] = await Promise.all([q('payments', 'amount,verified,paid_at'), q('expenses', 'amount,spent_on')]);
+  const now = new Date();
+  const rows = Array.from({ length: 6 }, (_, k) => { const d = new Date(now.getFullYear(), now.getMonth() - k, 1), key = monthKey(d); const inc = sum(payments.filter(p => p.verified && p.paid_at && monthKey(p.paid_at) === key), p => p.amount), exp = sum(expenses.filter(e => e.spent_on.slice(0, 7) === key), e => e.amount); return `<tr><td>${d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</td><td>${money(inc)}</td><td>${money(exp)}</td><td><b>${money(inc - exp)}</b></td></tr>`; }).join('');
+  $('#content').insertAdjacentHTML('beforeend', panel('Profit by month', 'Verified payments minus recorded expenses', tableHTML(['MONTH', 'INCOME', 'EXPENSES', 'PROFIT'], rows, '')));
+};
+const settings = async () => { await settingsBase(); if (!clientMode) await securityPanel(); };
+async function securityPanel() {
+  const [{ data: f }, { data: aal }, logins] = await Promise.all([supabase.auth.mfa.listFactors(), supabase.auth.mfa.getAuthenticatorAssuranceLevel(), q('login_events', 'ip,device,created_at', r => r.order('created_at', { ascending: false }).limit(6))]);
+  const enrolled = (f?.totp || []).length > 0, on = !!state.biz.require_admin_mfa;
+  $('#content').insertAdjacentHTML('beforeend', panel('Security', 'Two-step verification and recent sign-ins for your account',
+    `<div class="kvs kv-wide">${kv('Authenticator app', enrolled ? 'Set up' : 'Not set up')}${kv('This session', aal?.currentLevel === 'aal2' ? 'Verified with second step' : 'Password only')}${kv('Required for admin access', on ? 'Yes' : 'No')}</div><div class="link-row"><a class="button" href="../mfa.html?mode=enroll">${enrolled ? 'Add another device' : 'Set up authenticator app'}</a><button class="button ${on ? 'danger' : 'primary'}" data-action="toggle-mfa" data-on="${on}">${on ? 'Stop requiring two-step verification' : 'Require two-step verification'}</button></div>` +
+    tableHTML(['SIGN-IN', 'IP ADDRESS', 'DEVICE'], logins.map(l => `<tr><td>${h(new Date(l.created_at).toLocaleString())}</td><td>${h(l.ip)}</td><td>${h((l.device || '').slice(0, 70))}</td></tr>`).join(''), 'No sign-ins recorded yet.')));
+}
+
+/* ----- forms ----- */
+FORMS.expense = { title: 'Add expense', fields: () => field('spent_on', 'Date', 'date', true, `value="${today()}"`) + `<label>Category<select class="field" name="category">${options(EXPENSE_CATEGORIES, 'Other')}</select></label>` + field('description', 'Description', 'text', true, 'maxlength="300"') + field('amount', 'Amount', 'number', true, 'min="0.01" step=".01"') + field('vendor', 'Vendor (optional)', 'text', false) + sel('project_id', 'Project (optional)', '— none —', false) };
+FORMS.event = { title: 'Add calendar event', fields: () => field('title', 'Title', 'text', true, 'maxlength="200"') + `<label>Type<select class="field" name="kind">${options(['Shoot', 'Meeting', 'Delivery', 'Other'])}</select></label>` + field('starts_at', 'Starts', 'datetime-local') + field('ends_at', 'Ends (optional)', 'datetime-local', false) + field('location', 'Location', 'text', false) + sel('project_id', 'Project (optional)', '— none —', false) + textarea('notes', 'Notes') };
+FORMS.slip = { title: 'Upload bank transfer slip', fields: () => field('amount', 'Amount you transferred', 'number', true, 'min="0.01" step=".01"') + field('reference', 'Bank reference (optional)', 'text', false) + textarea('note', 'Note (optional)') + '<label class="wide">Slip (JPG, PNG, WebP or PDF, max 5 MB)<input class="field" name="file" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" required></label>' };
+FORMS.revision = { title: 'Request changes', fields: () => textarea('comment', 'What would you like changed?', true) };
+Object.assign(SUBMIT, {
+  async expense(d) { const row = clean(d); row.amount = Number(d.amount); must(await supabase.from('expenses').insert(row)); },
+  async event(d) { const row = clean(d); row.starts_at = new Date(d.starts_at).toISOString(); row.ends_at = d.ends_at ? new Date(d.ends_at).toISOString() : null; if (row.ends_at && row.ends_at < row.starts_at) throw new Error('The end time is before the start time.'); must(await supabase.from('calendar_events').insert(row)); },
+  async revision(d, form, preset) { must(await supabase.rpc('request_revision', { p_project: preset.project_id, p_comment: d.comment })); },
+  async slip(d, form, preset) {
+    const file = form.querySelector('[name=file]').files[0], amount = Number(d.amount);
+    if (!file) throw new Error('Choose the slip image or PDF.');
+    if (!(amount > 0)) throw new Error('Enter the amount you transferred.');
+    if (file.size > 5 * 1024 * 1024) throw new Error('The file must be 5 MB or smaller.');
+    if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(file.type)) throw new Error('Upload a JPG, PNG, WebP or PDF file.');
+    const path = `${preset.invoice_id}/${crypto.randomUUID()}-${file.name.replace(/[^\w.\-]+/g, '_')}`;
+    const up = await supabase.storage.from('payment-slips').upload(path, file, { contentType: file.type }); if (up.error) throw up.error;
+    const ins = await supabase.from('payment_slips').insert({ invoice_id: preset.invoice_id, storage_path: path, amount, reference: d.reference?.trim() || null, note: d.note?.trim() || null, submitted_by: state.user.id });
+    if (ins.error) { await supabase.storage.from('payment-slips').remove([path]); throw ins.error; }
+  }
+});
+
+/* ----- actions ----- */
+Object.assign(ACTIONS, {
+  async export(el) {
+    const w = el.dataset.what, day = r => r?.slice(0, 10);
+    if (w === 'clients') { const rows = await q('clients', '*', newest); downloadCSV('clients', ['Name', 'Business', 'Email', 'Phone', 'Address', 'Status', 'Registered'], rows.map(r => [r.name, r.business_name, r.email, r.phone, r.address, r.archived_at ? 'Archived' : 'Active', day(r.created_at)])); }
+    if (w === 'invoices') {
+      const [rows, pay] = await Promise.all([q('invoices', '*,clients(name)', newest), q('payments', 'invoice_id,amount,verified')]); const { paid } = balances(rows, pay);
+      downloadCSV('invoices', ['Invoice', 'Client', 'Issued', 'Due', 'Subtotal', 'Discount', 'Tax %', 'Total', 'Paid', 'Balance', 'Status'], rows.map(i => [invNo(i), i.clients?.name, i.issue_date, i.due_date, i.subtotal, i.discount, i.tax_rate, i.total, paid[i.id] || 0, i.status === 'Void' ? 0 : Math.max(0, i.total - (paid[i.id] || 0)), invStatus(i)]));
+    }
+    if (w === 'payments') { const rows = await q('payments', '*,invoices(invoice_number,clients(name))', r => r.order('paid_at', { ascending: false })); downloadCSV('payments', ['Date', 'Client', 'Invoice', 'Method', 'Reference', 'Amount', 'Verified'], rows.map(p => [day(p.paid_at), p.invoices?.clients?.name, invNo(p.invoices || {}), p.method, p.reference, p.amount, p.verified ? 'Yes' : 'No'])); }
+    if (w === 'expenses') { const rows = await q('expenses', '*,projects(title)', r => r.order('spent_on', { ascending: false })); downloadCSV('expenses', ['Date', 'Category', 'Description', 'Vendor', 'Project', 'Amount'], rows.map(x => [x.spent_on, x.category, x.description, x.vendor, x.projects?.title, x.amount])); }
+    toast('CSV downloaded');
+  },
+  async 'delete-expense'(el) { if (!confirm('Delete this expense?')) return; must(await supabase.from('expenses').delete().eq('id', el.dataset.id)); await refresh(); },
+  async 'delete-event'(el) { if (!confirm('Delete this event?')) return; must(await supabase.from('calendar_events').delete().eq('id', el.dataset.id)); await refresh(); },
+  async 'cal-nav'(el) { const s = Number(el.dataset.step); if (s === 0) { calMonth = new Date(); calMonth.setDate(1); } else calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + s, 1); await refresh(); },
+  async 'slip-view'(el) { const { data, error } = await supabase.storage.from('payment-slips').createSignedUrl(el.dataset.path, 120, { download: slipName(el.dataset.path) }); if (error) throw error; location.href = data.signedUrl; },
+  async 'slip-review'(el) {
+    const approve = el.dataset.approve === 'true';
+    let note = null;
+    if (approve) { if (!confirm('Record this bank transfer as a verified payment?')) return; } else { note = prompt('Reason (shown to the client):', ''); if (note === null) return; }
+    must(await supabase.rpc('review_slip', { p_id: el.dataset.id, p_approve: approve, p_note: note })); toast(approve ? 'Payment recorded' : 'Slip rejected'); await refresh();
+  },
+  async 'approve-project'(el) { const c = prompt('Add a comment (optional):', ''); if (c === null) return; must(await supabase.rpc('approve_project', { p_project: el.dataset.id, p_comment: c || null })); toast('Thank you – approved'); await refresh(); },
+  async 'address-revision'(el) { must(await supabase.rpc('address_revision', { p_id: el.dataset.id })); toast('Marked as addressed'); await refresh(); },
+  async 'set-included'(el) { const n = prompt('Revision rounds included in the price:', el.dataset.n); if (n === null) return; if (!/^\d{1,2}$/.test(n.trim())) return toast('Enter a whole number from 0 to 99.'); must(await supabase.from('projects').update({ included_revisions: Number(n) }).eq('id', el.dataset.id)); await refresh(); },
+  async 'toggle-mfa'(el) {
+    const turningOn = el.dataset.on !== 'true';
+    if (turningOn) {
+      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (aal?.currentLevel !== 'aal2') return toast('Set up an authenticator app and verify it in this session first.');
+      if (!confirm('From now on every admin must sign in with a second step. Continue?')) return;
+    }
+    must(await supabase.from('business_settings').update({ require_admin_mfa: turningOn }).eq('id', true)); state.biz.require_admin_mfa = turningOn; toast(turningOn ? 'Two-step verification is now required' : 'Requirement turned off'); await refresh();
+  }
+});
+
 /* ---------- boot ---------- */
 function paintUser() {
   const name = state.profile.full_name || state.user.email;
@@ -583,6 +808,14 @@ async function run() {
   const { data: biz } = await supabase.from('business_settings').select('*').eq('id', true).maybeSingle();
   state.biz = biz || {}; setCurrency(state.biz.currency);
   if (!clientMode) { try { await supabase.rpc('sync_invoice_statuses'); } catch (_) { /* optional until upgrade.sql is applied */ } }
+  startIdleTimer();
   await refresh();
+}
+// Sign out after 30 minutes without interaction (shared computers, forgotten tabs).
+function startIdleTimer(limit = 30 * 60 * 1000) {
+  let t;
+  const reset = () => { clearTimeout(t); t = setTimeout(async () => { await supabase.auth.signOut(); location.href = `${clientMode ? '../client-login.html' : '../login.html'}?msg=idle`; }, limit); };
+  ['click', 'keydown', 'pointerdown', 'scroll', 'visibilitychange'].forEach(ev => addEventListener(ev, reset, { passive: true }));
+  reset();
 }
 run();

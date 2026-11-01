@@ -121,3 +121,141 @@ export async function downloadPDF(kind, data) {
   const safe = s => String(s || '').replace(/[^\w\-]+/g, '_').replace(/^_+|_+$/g, '');
   pdf.save(`${data.number}${client.name ? '-' + safe(client.name) : ''}.pdf`);
 }
+
+/* ======================================================================
+   Reports: per-client report and monthly studio summary
+   ====================================================================== */
+const safeName = s => String(s || '').replace(/[^\w\-]+/g, '_').replace(/^_+|_+$/g, '');
+const fmtStamp = () => new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+function reportShell(pdf, { biz, title, subtitle }) {
+  const W = pdf.internal.pageSize.getWidth(), M = 44;
+  pdf.setFillColor(...ACCENT); pdf.rect(0, 0, W, 8, 'F');
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(18); pdf.setTextColor(...INK);
+  pdf.text(biz.business_name || 'StudioDesk', M, 50);
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(...MUTED);
+  pdf.text(`Generated ${fmtStamp()}`, M, 65);
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(22); pdf.setTextColor(...ACCENT);
+  pdf.text(title, W - M, 50, { align: 'right' });
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10); pdf.setTextColor(...INK);
+  pdf.text(subtitle, W - M, 67, { align: 'right' });
+  return { W, M, y: 96 };
+}
+
+function kpiRow(pdf, ctx, items) {
+  const { W, M } = ctx, gap = 8, bw = (W - M * 2 - gap * (items.length - 1)) / items.length;
+  items.forEach(([label, value], i) => {
+    const x = M + i * (bw + gap);
+    pdf.setFillColor(242, 245, 255); pdf.roundedRect(x, ctx.y, bw, 52, 5, 5, 'F');
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(7.5); pdf.setTextColor(...MUTED); pdf.text(label.toUpperCase(), x + 10, ctx.y + 17);
+    pdf.setTextColor(...INK);
+    let fs = 12; pdf.setFontSize(fs); while (fs > 6 && pdf.getTextWidth(String(value)) > bw - 16) { fs -= 0.5; pdf.setFontSize(fs); }   // shrink to fit, never wrap
+    pdf.text(String(value), x + 10, ctx.y + 38);
+  });
+  ctx.y += 52 + 20;
+}
+
+function section(pdf, ctx, heading, head, body, opts = {}) {
+  const { W, M } = ctx;
+  if (ctx.y > 740) { pdf.addPage(); ctx.y = 56; }
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11); pdf.setTextColor(...INK); pdf.text(heading, M, ctx.y);
+  pdf.autoTable({
+    startY: ctx.y + 8, head: [head], theme: 'plain',
+    body: body.length ? body : [[{ content: 'Nothing to show.', colSpan: head.length, styles: { textColor: MUTED, fontStyle: 'italic' } }]],
+    styles: { font: 'helvetica', fontSize: 8.5, cellPadding: { top: 5, bottom: 5, left: 5, right: 5 }, textColor: INK, overflow: 'linebreak' },
+    headStyles: { fillColor: [242, 245, 255], textColor: MUTED, fontStyle: 'bold', fontSize: 7.5 },
+    columnStyles: opts.columnStyles || {},
+    didParseCell: h => { const a = (opts.columnStyles || {})[h.column.index]?.halign; if (a && h.section === 'head') h.cell.styles.halign = a; },
+    didDrawCell: h => { if (h.section === 'body') { pdf.setDrawColor(...LINE); pdf.line(M, h.cell.y + h.cell.height, W - M, h.cell.y + h.cell.height); } },
+    margin: { left: M, right: M, bottom: 40 }
+  });
+  ctx.y = pdf.lastAutoTable.finalY + 24;
+}
+
+function footers(pdf, left) {
+  const W = pdf.internal.pageSize.getWidth(), pages = pdf.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    pdf.setPage(i); pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8); pdf.setTextColor(...MUTED);
+    pdf.text(left, 44, 818); pdf.text(`Page ${i} of ${pages}`, W - 44, 818, { align: 'right' });
+  }
+}
+
+/** data: { client, projects[], invoices[], payments[], activity[], biz } */
+export async function downloadClientReport(data) {
+  await ensureLibs();
+  const { jsPDF } = window.jspdf;
+  const { client: c, projects = [], invoices = [], payments = [], activity = [], biz = {} } = data;
+  const cur = biz.currency || 'LKR';
+  const money = n => `${cur} ${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const today = new Date().toLocaleDateString('en-CA');
+  const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+  const ctx = reportShell(pdf, { biz, title: 'CLIENT REPORT', subtitle: c.name || '' });
+  const { M } = ctx;
+
+  // client card
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8); pdf.setTextColor(...MUTED); pdf.text('CLIENT', M, ctx.y);
+  pdf.setFontSize(13); pdf.setTextColor(...INK); pdf.text(c.name || '-', M, ctx.y + 16);
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(...MUTED);
+  const lines = [c.business_name, c.email, c.phone, c.address, `Client since ${fmtDate(c.created_at)}`, c.archived_at ? 'Status: Archived' : 'Status: Active'].filter(Boolean);
+  pdf.text(lines.flatMap(l => pdf.splitTextToSize(String(l), 480)), M, ctx.y + 31);
+  ctx.y += 31 + lines.length * 12 + 14;
+
+  const live = invoices.filter(i => i.status !== 'Void');
+  const paidBy = {}; payments.filter(p => p.verified).forEach(p => { paidBy[p.invoice_id] = (paidBy[p.invoice_id] || 0) + Number(p.amount); });
+  const invoiced = live.reduce((n, i) => n + Number(i.total), 0);
+  const paid = live.reduce((n, i) => n + (paidBy[i.id] || 0), 0);
+  const open = projects.filter(p => !['Completed', 'Cancelled'].includes(p.status));
+  kpiRow(pdf, ctx, [['Projects', `${projects.length} (${open.length} open)`], ['Completed', projects.filter(p => p.status === 'Completed').length], ['Invoiced', money(invoiced)], ['Paid', money(paid)], ['Outstanding', money(Math.max(0, invoiced - paid))]]);
+
+  section(pdf, ctx, 'Projects', ['Code', 'Project', 'Category', 'Status', 'Progress', 'Deadline', 'Agreed price'],
+    projects.map(p => [`P-${p.project_code}`, p.title, p.category || '-', p.status, `${p.progress || 0}%`, fmtDate(p.deadline), money(p.agreed_price)]),
+    { columnStyles: { 6: { halign: 'right' }, 4: { halign: 'right' } } });
+  section(pdf, ctx, 'Invoices', ['Invoice', 'Issued', 'Due', 'Total', 'Paid', 'Balance', 'Status'],
+    invoices.map(i => {
+      const eff = (['Pending', 'Partially Paid'].includes(i.status) && i.due_date && i.due_date < today) ? 'Overdue' : i.status;
+      return [`INV-${String(i.invoice_number).padStart(4, '0')}`, fmtDate(i.issue_date), fmtDate(i.due_date), money(i.total), money(paidBy[i.id] || 0), i.status === 'Void' ? '-' : money(Math.max(0, i.total - (paidBy[i.id] || 0))), eff];
+    }), { columnStyles: { 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' } } });
+  const invNum = Object.fromEntries(invoices.map(i => [i.id, `INV-${String(i.invoice_number).padStart(4, '0')}`]));
+  section(pdf, ctx, 'Payments received', ['Date', 'Invoice', 'Method', 'Reference', 'Amount', 'Verified'],
+    payments.map(p => [fmtDate(p.paid_at), invNum[p.invoice_id] || '-', p.method, p.reference || '-', money(p.amount), p.verified ? 'Yes' : 'No']),
+    { columnStyles: { 4: { halign: 'right' } } });
+  section(pdf, ctx, 'Recent activity', ['When', 'Event', 'Detail'],
+    activity.map(a => [new Date(a.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }), a.action.replace(/^db\./, '').replace(/\./g, ' '), [a.detail?.label, a.detail?.changed && `changed: ${Object.keys(a.detail.changed).join(', ')}`, a.detail?.message].filter(Boolean).join(' · ')]));
+
+  footers(pdf, `Client report · ${c.name || ''}`);
+  pdf.save(`Client-report-${safeName(c.name) || 'client'}-${today}.pdf`);
+}
+
+/** data: { month: 'YYYY-MM', label, newClients[], projectsCreated[], projectsCompleted[], activeProjects[], invoices[], payments[], quotations[], filesCount, messagesCount, activityCounts{}, clientNames{}, snapshot:{outstanding, overdue}, biz } */
+export async function downloadMonthlyReport(data) {
+  await ensureLibs();
+  const { jsPDF } = window.jspdf;
+  const { biz = {}, label } = data;
+  const cur = biz.currency || 'LKR';
+  const money = n => `${cur} ${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+  const ctx = reportShell(pdf, { biz, title: 'MONTHLY SUMMARY', subtitle: label });
+  const sum = (arr, f) => arr.reduce((n, x) => n + Number(f(x) || 0), 0);
+  const issued = data.invoices.filter(i => i.status !== 'Void');
+  const received = data.payments.filter(p => p.verified);
+
+  kpiRow(pdf, ctx, [['New clients', data.newClients.length], ['New projects', data.projectsCreated.length], ['Completed', data.projectsCompleted.length], ['Invoiced', money(sum(issued, i => i.total))], ['Received', money(sum(received, p => p.amount))]]);
+  const spent = sum(data.expenses || [], x => x.amount), income = sum(received, p => p.amount);
+  kpiRow(pdf, ctx, [['Expenses', money(spent)], ['Net profit', money(income - spent)], ['Quotations sent', data.quotations.length], ['Accepted', data.quotations.filter(x => x.status === 'Accepted').length], ['Outstanding now', money(data.snapshot.outstanding)]]);
+
+  const byClient = {};
+  received.forEach(p => { const n = data.clientNames[p.client_id] || 'Unknown'; byClient[n] = (byClient[n] || 0) + Number(p.amount); });
+  const top = Object.entries(byClient).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  section(pdf, ctx, 'Revenue by client (payments received)', ['Client', 'Received'], top.map(([n, v]) => [n, money(v)]), { columnStyles: { 1: { halign: 'right' } } });
+  section(pdf, ctx, 'New clients', ['Name', 'Business', 'Email', 'Registered'], data.newClients.map(c => [c.name, c.business_name || '-', c.email, fmtDate(c.created_at)]));
+  section(pdf, ctx, 'Projects started this month', ['Code', 'Project', 'Client', 'Status', 'Agreed price'], data.projectsCreated.map(p => [`P-${p.project_code}`, p.title, data.clientNames[p.client_id] || '-', p.status, money(p.agreed_price)]), { columnStyles: { 4: { halign: 'right' } } });
+  section(pdf, ctx, 'Projects completed this month', ['Code', 'Project', 'Client', 'Completed'], data.projectsCompleted.map(p => [`P-${p.project_code}`, p.title, data.clientNames[p.client_id] || '-', fmtDate(p.updated_at)]));
+  section(pdf, ctx, 'Invoices issued', ['Invoice', 'Client', 'Issued', 'Total', 'Status'], data.invoices.map(i => [`INV-${String(i.invoice_number).padStart(4, '0')}`, data.clientNames[i.client_id] || '-', fmtDate(i.issue_date), money(i.total), i.status]), { columnStyles: { 3: { halign: 'right' } } });
+  section(pdf, ctx, 'Payments received', ['Date', 'Client', 'Method', 'Reference', 'Amount'], received.map(p => [fmtDate(p.paid_at), data.clientNames[p.client_id] || '-', p.method, p.reference || '-', money(p.amount)]), { columnStyles: { 4: { halign: 'right' } } });
+  section(pdf, ctx, 'Expenses', ['Date', 'Category', 'Description', 'Vendor', 'Amount'], (data.expenses || []).map(x => [fmtDate(x.spent_on), x.category, x.description, x.vendor || '-', money(x.amount)]), { columnStyles: { 4: { halign: 'right' } } });
+  section(pdf, ctx, 'Projects in progress (current)', ['Code', 'Project', 'Client', 'Status', 'Progress', 'Deadline'], data.activeProjects.map(p => [`P-${p.project_code}`, p.title, data.clientNames[p.client_id] || '-', p.status, `${p.progress || 0}%`, fmtDate(p.deadline)]), { columnStyles: { 4: { halign: 'right' } } });
+  section(pdf, ctx, 'Database activity this month', ['Event', 'Count'], [...Object.entries(data.activityCounts).sort((a, b) => b[1] - a[1]), ['files uploaded', data.filesCount], ['project messages', data.messagesCount]].map(([k, v]) => [k, String(v)]), { columnStyles: { 1: { halign: 'right' } } });
+
+  footers(pdf, `Monthly summary · ${label}`);
+  pdf.save(`Monthly-summary-${data.month}.pdf`);
+}
