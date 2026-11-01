@@ -1,6 +1,11 @@
 import { supabase } from './supabase.js';
 
-export const money = n => new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(Number(n || 0));
+let currency = 'LKR';
+export function setCurrency(c) { if (c && /^[A-Z]{3}$/.test(c)) currency = c; }
+export const money = n => {
+  try { return new Intl.NumberFormat('en-LK', { style: 'currency', currency, maximumFractionDigits: 0 }).format(Number(n || 0)); }
+  catch (_) { return `${currency} ${Number(n || 0).toLocaleString()}`; }
+};
 
 export const date = d => {
   if (!d) return '—';

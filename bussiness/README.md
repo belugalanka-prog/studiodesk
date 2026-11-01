@@ -13,6 +13,8 @@ Static HTML/CSS/ES module application backed by Supabase (Auth, Postgres and pri
 
 ## Setup
 
+> Upgrading an existing project? Run `supabase/fixes.sql`, then `supabase/upgrade.sql` (service presets, invoice/quotation functions, smarter statuses).
+>
 > Already created your database from an older version? Run `supabase/fixes.sql` once in the SQL Editor. It closes a privilege-escalation hole and fixes client file downloads.
 
 
