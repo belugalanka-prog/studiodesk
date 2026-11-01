@@ -3,10 +3,3 @@ verify_jwt = true
 
 [functions.record-payment]
 verify_jwt = true
-
-[functions.invite-client]
-verify_jwt = true
-
-# called by a Database Webhook (no user JWT); protected by the x-webhook-secret header instead
-[functions.notify-admin]
-verify_jwt = false

@@ -13,14 +13,6 @@ Static HTML/CSS/ES module application backed by Supabase (Auth, Postgres and pri
 
 ## Setup
 
-> **Run in this order:** schema.sql → fixes.sql → upgrade.sql → security.sql → features.sql
->
-> **Features added in v3:** bank-slip upload and one-click approval, expenses and monthly profit, calendar with daily reminders, revision rounds and client approval, CSV export (clients, invoices, payments, expenses), activity log page, admin two-step verification, new sign-in alerts, nightly backups with restore test.
->
-> **Also new in this version:** run `supabase/security.sql` (after the other SQL files) and follow `SECURITY.md`.
-> - `enquiry.html` is a public form: when someone submits their email, a client record is created in the database automatically.
-> - Admin → Client page: **Client report** PDF. Admin → Reports: **Monthly summary** PDF.
-
 > Upgrading an existing project? Run `supabase/fixes.sql`, then `supabase/upgrade.sql` (service presets, invoice/quotation functions, smarter statuses).
 >
 > Already created your database from an older version? Run `supabase/fixes.sql` once in the SQL Editor. It closes a privilege-escalation hole and fixes client file downloads.

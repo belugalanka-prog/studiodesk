@@ -35,15 +35,6 @@ export async function requireUser(role) {
   const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle();
   if (!profile) { await supabase.auth.signOut(); location.replace(`${login}?msg=noprofile`); return null; }
   if (profile.role !== role) { await supabase.auth.signOut(); location.replace(`${login}?msg=wrongrole`); return null; }
-  if (role === 'admin') {   // second step (TOTP): verify if enrolled, enrol if the studio requires it
-    const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-    const base = location.pathname.includes('/pages/') ? '../' : '';
-    if (aal?.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') { location.replace(`${base}mfa.html?mode=verify`); return null; }
-    if (aal?.currentLevel === 'aal1' && aal?.nextLevel === 'aal1') {
-      const { data: s } = await supabase.from('business_settings').select('require_admin_mfa').eq('id', true).maybeSingle();
-      if (s?.require_admin_mfa) { location.replace(`${base}mfa.html?mode=enroll`); return null; }
-    }
-  }
   return { user, profile };
 }
 
