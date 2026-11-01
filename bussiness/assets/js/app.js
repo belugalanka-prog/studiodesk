@@ -147,8 +147,8 @@ async function dashboard() {
   const [clients, projects, invoices, payments] = await Promise.all([
     clientMode ? Promise.resolve([]) : q('clients', 'id,archived_at'),
     q('projects', 'id,title,status,deadline,progress,created_at,category'),
-    q('invoices', 'id,total,status,due_date'),
-    q('payments', 'invoice_id,amount,verified,paid_at')
+    qAll('invoices', 'id,total,status,due_date'),
+    qAll('payments', 'invoice_id,amount,verified,paid_at')
   ]);
   const open = projects.filter(p => !['Completed', 'Cancelled'].includes(p.status));
   const live = invoices.filter(i => i.status !== 'Void');
@@ -180,7 +180,7 @@ function profitPanels(payments, expenses) {
 }
 async function reports() {
   setAction(`<input class="field" type="month" id="report-month" value="${today().slice(0, 7)}" max="${today().slice(0, 7)}" aria-label="Report month" style="width:auto"><button class="button primary" data-action="pdf-monthly">⬇ Monthly summary PDF</button>`);
-  const [projects, invoices, payments, expenses] = await Promise.all([q('projects', 'id,status'), q('invoices', 'id,status,total,due_date,clients(name)'), q('payments', 'invoice_id,amount,verified,paid_at'), safeQ('expenses', 'spent_on,amount,category')]);
+  const [projects, invoices, payments, expenses] = await Promise.all([q('projects', 'id,status'), q('invoices', 'id,status,total,due_date,clients(name)'), qAll('payments', 'invoice_id,amount,verified,paid_at'), safeQ('expenses', 'spent_on,amount,category')]);
   const count = (arr, f) => arr.reduce((m, x) => { const k = f(x); m[k] = (m[k] || 0) + 1; return m; }, {});
   const rowsOf = (obj, cls) => Object.entries(obj).map(([k, v]) => `<tr><td>${cls ? badge(k) : h(k)}</td><td>${v}</td></tr>`).join('');
   const live = invoices.filter(i => i.status !== 'Void');
@@ -213,7 +213,7 @@ async function quotationsList() {
   content(dataTable({ headers: ['QUOTE', 'CLIENT', 'DATE', 'VALID UNTIL', 'TOTAL', 'STATUS'], rows, placeholder: 'Search quotations…', status: eff, search: r => [qNo(r), r.clients?.name].join(' '), row: r => `<tr><td><a class="name-cell" href="${base}?id=${r.id}">${qNo(r)}</a></td><td>${h(r.clients?.name)}</td><td>${date(r.created_at)}</td><td>${date(r.valid_until)}</td><td>${money(r.total)}</td><td>${badge(eff(r))}</td></tr>` }));
 }
 async function invoicesList() {
-  const [rows, payments] = await Promise.all([q('invoices', '*,clients(name)', newest), q('payments', 'invoice_id,amount,verified')]);
+  const [rows, payments] = await Promise.all([q('invoices', '*,clients(name)', newest), qAll('payments', 'invoice_id,amount,verified')]);
   const { balance } = balances(rows, payments);
   const base = clientMode ? 'client-invoice-details.html' : 'invoice-details.html';
   content(dataTable({ headers: ['INVOICE', 'CLIENT', 'DATE', 'DUE', 'TOTAL', 'BALANCE', 'STATUS'], rows, placeholder: 'Search invoices…', status: invStatus, search: r => [invNo(r), r.clients?.name].join(' '), row: r => `<tr><td><a class="name-cell" href="${base}?id=${r.id}">${invNo(r)}</a></td><td>${h(r.clients?.name)}</td><td>${date(r.issue_date)}</td><td>${date(r.due_date)}</td><td>${money(r.total)}</td><td>${r.status === 'Void' ? '—' : money(balance(r))}</td><td>${badge(invStatus(r))}</td></tr>` }));
@@ -238,8 +238,14 @@ async function filesList() {
   content(panel('Project files', 'Private files use expiring secure download links.', tableHTML(['FILE', 'PROJECT', 'CATEGORY', 'VISIBILITY', 'ADDED', ''], fileRows(rows), 'No project files yet.')));
 }
 async function messagesList() {
-  const rows = await q('messages', '*,projects(title),profiles!sender_id(full_name)', newest);
-  content(panel('Conversations', 'Newest first', `<div class="activity-list">${rows.map(m => `<div class="activity"><span class="activity-dot"></span><span><b>${h(m.projects?.title || 'Project')} · ${m.sender_id === state.user.id ? 'You' : h(m.profiles?.full_name || (clientMode ? 'Studio team' : 'Client'))}</b><div class="msg-body">${h(m.body)}</div><time>${new Date(m.created_at).toLocaleString()}</time></span></div>`).join('') || '<div class="empty">No messages yet.</div>'}</div>`));
+  // The sender-name embed depends on a profiles policy; if it fails, still show the messages.
+  const load = cols => q('messages', cols, r => r.order('created_at', { ascending: false }).limit(300));
+  let rows;
+  try { rows = await load('*,projects(title),profiles!sender_id(full_name)'); }
+  catch (_) { rows = await load('*,projects(title)'); }
+  const who = m => m.sender_id === state.user.id ? 'You' : h(m.profiles?.full_name || (clientMode ? 'Studio team' : 'Client'));
+  const item = m => `<div class="activity"><span class="activity-dot"></span><span><b>${h(m.projects?.title || 'Project')} · ${who(m)}</b><div class="msg-body">${h(m.body)}</div><time>${new Date(m.created_at).toLocaleString()}</time> <button class="button" data-create="message" data-project="${m.project_id}">Reply</button></span></div>`;
+  content(panel('Conversations', rows.length >= 300 ? 'Latest 300 messages, newest first' : 'Newest first', `<div class="activity-list">${rows.map(item).join('') || '<div class="empty">No messages yet.</div>'}</div>`));
 }
 
 /* ---------- settings & profile ---------- */
@@ -271,7 +277,7 @@ async function clientDetails() {
   if (!c) { content(`<div class="panel empty">Client not found. ${back('clients.html', 'Back to clients')}</div>`); return; }
   setHead(c.name, c.business_name || 'Client details');
   setAction(`${back('clients.html', 'Clients')}<button class="button" data-action="archive-client" data-id="${c.id}" data-archived="${!!c.archived_at}">${c.archived_at ? 'Restore client' : 'Archive client'}</button><button class="button" data-action="pdf-client" data-id="${c.id}">⬇ Client report</button><button class="button" data-create="quote" data-client="${c.id}">＋ Quotation</button><button class="button" data-create="invoice" data-client="${c.id}">＋ Invoice</button><button class="button primary" data-create="project" data-client="${c.id}">＋ New project</button>`);
-  const [projects, invoices, payments, links] = await Promise.all([q('projects', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), q('invoices', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), q('payments', 'invoice_id,amount,verified'), q('client_users', 'user_id,profiles(full_name,email)', r => r.eq('client_id', id))]);
+  const [projects, invoices, payments, links] = await Promise.all([q('projects', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), q('invoices', '*', r => r.eq('client_id', id).order('created_at', { ascending: false })), qAll('payments', 'invoice_id,amount,verified'), q('client_users', 'user_id,profiles(full_name,email)', r => r.eq('client_id', id))]);
   const { balance } = balances(invoices, payments);
   content(`<div class="grid-two">${panel('Contact', c.archived_at ? 'Archived' : 'Active client', `<div class="kvs">${kv('Email', h(c.email))}${kv('Phone', h(c.phone))}${kv('Business', h(c.business_name))}${kv('Address', h(c.address))}${kv('Registered', date(c.created_at))}</div>`)}${panel('Portal access', 'Let this client sign in to the client portal', `<div class="activity-list">${links.map(l => `<div class="activity"><span class="activity-dot"></span><span><b>${h(l.profiles?.full_name || l.profiles?.email)}</b><div class="sub-cell">${h(l.profiles?.email)}</div></span><button class="button danger small-btn" data-action="unlink" data-user="${l.user_id}" data-client="${id}">Remove</button></div>`).join('') || '<div class="empty">No portal account linked.</div>'}</div>${c.archived_at ? '' : `<div class="link-row"><button class="button primary" data-action="invite-client" data-client="${id}">✉ Send portal invite to ${h(c.email)}</button></div>`}<div class="link-row"><input class="field" id="link-email" type="email" placeholder="Registered user's email"><button class="button primary" data-action="link-account" data-client="${id}">Link account</button></div><p class="sub-cell">Use “Send portal invite”, or link an account you already created.</p>`)}</div>${panel('Projects', '', tableHTML(['PROJECT', 'STATUS', 'DEADLINE', 'PROGRESS'], projects.map(p => `<tr><td><a class="name-cell" href="project-details.html?id=${p.id}">${h(p.title)}</a></td><td>${badge(p.status)}</td><td>${date(p.deadline)}</td><td>${p.progress}%</td></tr>`).join(''), 'No projects for this client yet.'))}${panel('Invoices', '', tableHTML(['INVOICE', 'DUE', 'TOTAL', 'BALANCE', 'STATUS'], invoices.map(i => `<tr><td><a class="name-cell" href="invoice-details.html?id=${i.id}">${invNo(i)}</a></td><td>${date(i.due_date)}</td><td>${money(i.total)}</td><td>${i.status === 'Void' ? '—' : money(balance(i))}</td><td>${badge(invStatus(i))}</td></tr>`).join(''), 'No invoices for this client yet.'))}`);
 }
@@ -282,7 +288,7 @@ async function projectDetails() {
   if (!p) { content(`<div class="panel empty">Project not found. ${back(listPage, 'Back to projects')}</div>`); return; }
   setHead(p.title, `P-${p.project_code} · ${p.clients?.name || ''}`);
   setAction(back(listPage, 'Projects') + (clientMode ? `<button class="button primary" data-create="message" data-project="${p.id}">＋ New message</button>` : `<button class="button" data-create="quote" data-client="${p.client_id}" data-project="${p.id}">＋ Quotation</button><button class="button" data-create="invoice" data-client="${p.client_id}" data-project="${p.id}">＋ Invoice</button><button class="button" data-create="task" data-project="${p.id}">＋ Task</button><button class="button" data-create="upload" data-project="${p.id}">＋ Files</button><button class="button primary" data-create="message" data-project="${p.id}">＋ Message</button>`));
-  const [tasks, files, msgs, reviews] = await Promise.all([q('project_tasks', '*', r => r.eq('project_id', id).order('created_at')), q('project_files', '*', r => r.eq('project_id', id).order('created_at', { ascending: false })), q('messages', '*,profiles!sender_id(full_name)', r => r.eq('project_id', id).order('created_at', { ascending: false })), safeQ('deliverable_reviews', '*', r => r.eq('project_id', id).order('created_at', { ascending: false }))]);
+  const [tasks, files, msgs, reviews] = await Promise.all([q('project_tasks', '*', r => r.eq('project_id', id).order('created_at')), q('project_files', '*', r => r.eq('project_id', id).order('created_at', { ascending: false })), q('messages', '*,profiles!sender_id(full_name)', r => r.eq('project_id', id).order('created_at', { ascending: false })).catch(() => q('messages', '*', r => r.eq('project_id', id).order('created_at', { ascending: false }))), safeQ('deliverable_reviews', '*', r => r.eq('project_id', id).order('created_at', { ascending: false }))]);
   const latest = {}; reviews.slice().reverse().forEach(rv => { if (rv.file_id) latest[rv.file_id] = rv; });
   const included = Number(p.included_revisions ?? 2), usedRounds = reviews.filter(rv => rv.decision === 'Changes requested').length, extra = Math.max(0, usedRounds - included);
   const revPanel = panel('Revisions & approvals', clientMode ? 'Your feedback on delivered files' : 'Client decisions on shared files', `<div class="kvs kv-wide">${kv('Rounds used', `${usedRounds} of ${included} included`)}${extra ? kv('Extra rounds', `<span class="badge red">${extra} beyond what was quoted</span>`) : ''}</div>${clientMode ? '' : `<div class="link-row"><label>Included revision rounds<span class="inline-row"><input class="field" id="included-input" type="number" min="0" max="50" value="${included}"><button class="button" data-action="set-included" data-id="${p.id}">Update</button></span></label>${extra ? `<button class="button primary" data-create="invoice" data-client="${p.client_id}" data-project="${p.id}" data-extra="${extra}">Invoice ${extra} extra round${extra > 1 ? 's' : ''}</button>` : ''}</div>`}${tableHTML(['DATE', 'FILE', 'DECISION', 'ROUND', 'COMMENT'], reviews.map(rv => `<tr><td>${date(rv.created_at)}</td><td>${h(rv.file_name || '—')}</td><td><span class="badge ${rv.decision === 'Approved' ? 'green' : 'orange'}">${rv.decision}</span></td><td>${rv.decision === 'Approved' ? '—' : rv.round}</td><td class="wrap">${h(rv.comment || '—')}</td></tr>`).join(''), clientMode ? 'Use Approve or Request changes next to a shared file below.' : 'No approvals or change requests yet.')}`);
@@ -307,7 +313,7 @@ async function invoiceDetails() {
 /* ---------- modal forms ---------- */
 const field = (name, label, type = 'text', required = true, extra = '') => `<label>${label}<input class="field" name="${name}" type="${type}" ${required ? 'required' : ''} ${extra}></label>`;
 const sel = (name, label, first, required = true, wide = false) => `<label ${wide ? 'class="wide"' : ''}>${label}<select class="field" name="${name}" ${required ? 'required' : ''}><option value="">${first}</option></select></label>`;
-const textarea = (name, label, required = false) => `<label class="wide">${label}<textarea class="field" name="${name}" ${required ? 'required' : ''}></textarea></label>`;
+const textarea = (name, label, required = false, extra = '') => `<label class="wide">${label}<textarea class="field" name="${name}" ${required ? 'required' : ''} ${extra}></textarea></label>`;
 
 const TASK_PRESETS = ['Client brief & references', 'Concept / moodboard', 'First draft', 'Client review', 'Revisions', 'Final delivery', 'Send invoice', 'Collect payment'];
 const QUICK_ADMIN = ['Your draft is ready for review.', 'Files have been delivered. Please check the Files tab.', 'Your invoice has been issued.', 'Payment received, thank you!', 'Could you share the reference material for this project?'];
@@ -331,7 +337,7 @@ const FORMS = {
   project: { title: 'Create project', fields: () => field('title', 'Project title') + sel('client_id', 'Client', 'Choose a client') + `<label>Category<select class="field" name="category">${options(['Graphic Design', 'Photography', 'Videography', 'Video Editing', 'Social Media Design', 'Advertising Campaign', 'Other'])}</select></label><label>Deadline<input class="field" name="deadline" type="date"></label>` + field('agreed_price', 'Agreed price (LKR)', 'number', false, 'min="0" step=".01"') + `<label>Priority<select class="field" name="priority">${options(['Normal', 'Low', 'High', 'Urgent'])}</select></label>` + textarea('description', 'Description') },
   task: { title: 'New task', fields: () => sel('project_id', 'Project', 'Choose a project', true, true) + field('title', 'Task title (pick a preset or type your own)', 'text', true, 'list="task-presets"') + `<datalist id="task-presets">${TASK_PRESETS.map(t => `<option value="${h(t)}">`).join('')}</datalist>` + field('due_date', 'Due date', 'date', false) },
   payment: { title: 'Record payment', fields: () => sel('invoice_id', 'Invoice', 'Choose an invoice', true, true) + field('amount', 'Amount (LKR)', 'number', true, 'min="0.01" step=".01"') + field('paid_on', 'Payment date', 'date', true, `value="${today()}"`) + `<label>Method<select class="field" name="method">${options(['Bank transfer', 'Cash', 'Card', 'Other'])}</select></label>` + field('reference', 'Reference', 'text', false) },
-  message: { title: 'Send a project message', fields: () => sel('project_id', 'Project', 'Choose a project', true, true) + `<label class="wide">Quick reply<select class="field" data-quick><option value="">Choose a preset or write your own below…</option>${(clientMode ? QUICK_CLIENT : QUICK_ADMIN).map(t => `<option>${h(t)}</option>`).join('')}</select></label>` + textarea('body', 'Message', true) },
+  message: { title: 'Send a project message', fields: () => sel('project_id', 'Project', 'Choose a project', true, true) + `<label class="wide">Quick reply<select class="field" data-quick><option value="">Choose a preset or write your own below…</option>${(clientMode ? QUICK_CLIENT : QUICK_ADMIN).map(t => `<option>${h(t)}</option>`).join('')}</select></label>` + textarea('body', 'Message', true, 'maxlength="4000" rows="5"') },
   service: { title: 'Service', fields: () => field('name', 'Service name') + field('unit_price', 'Default price', 'number', true, 'min="0" step=".01"') + textarea('description', 'Description (shown in the picker)') + '<label class="check"><input type="checkbox" name="active" checked> Active</label>' },
   convert: { title: 'Convert to invoice', fields: () => `<label>Due in<select class="field" id="convert-due">${DUE_PRESETS.map(([v, l]) => `<option value="${v}" ${v === '14' ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` + field('due_date', 'Due date', 'date', true, `value="${addDays(14)}"`) + `<label class="wide">Payment terms<input class="field" name="payment_terms" list="terms-list" value="${h(state.biz.payment_terms || '')}"></label>${termsDatalist()}` },
   upload: { title: 'Upload files', fields: () => sel('project_id', 'Project', 'Choose a project', true, true) + `<label>Category<select class="field" name="category">${options(FILE_CATEGORIES, 'Documents')}</select></label><label class="check"><input type="checkbox" name="visible_to_client"> Visible to client</label><label class="wide">Files<input class="field" name="files" type="file" multiple required></label>` }
@@ -357,7 +363,13 @@ const SUBMIT = {
     if (error) throw error;
     location.href = `invoice-details.html?id=${data.id}`;
   },
-  async message(d) { must(await supabase.from('messages').insert({ project_id: d.project_id, sender_id: state.user.id, body: d.body.trim() })); },
+  async message(d) {
+    const body = (d.body || '').trim();
+    if (!d.project_id) throw new Error('Choose a project.');
+    if (!body) throw new Error('Please write a message.');
+    if (body.length > 4000) throw new Error('Messages can be up to 4000 characters.');
+    must(await supabase.from('messages').insert({ project_id: d.project_id, sender_id: state.user.id, body }));
+  },
   async upload(d, form) {
     const files = [...form.querySelector('[name=files]').files];
     const { data: project, error } = await supabase.from('projects').select('id,client_id').eq('id', d.project_id).single();
@@ -413,7 +425,7 @@ async function populateSelects(root, preset) {
   if (root.querySelector('[name=client_id]')) fill('client_id', await q('clients', 'id,name', r => r.is('archived_at', null).order('name')), c => c.name);
   if (root.querySelector('[name=project_id]')) fill('project_id', await q('projects', 'id,title', r => r.order('title')), p => p.title);
   if (root.querySelector('[name=invoice_id]')) {
-    const [inv, pay] = await Promise.all([q('invoices', 'id,invoice_number,total,status,clients(name)', r => r.not('status', 'in', '("Void","Paid")').order('created_at', { ascending: false })), q('payments', 'invoice_id,amount,verified')]);
+    const [inv, pay] = await Promise.all([q('invoices', 'id,invoice_number,total,status,clients(name)', r => r.not('status', 'in', '("Void","Paid")').order('created_at', { ascending: false })), qAll('payments', 'invoice_id,amount,verified')]);
     const { balance } = balances(inv, pay);
     const open = inv.filter(i => balance(i) > 0);
     fill('invoice_id', open, i => `${invNo(i)} · ${i.clients?.name || ''} · ${money(balance(i))} due`, i => ({ balance: balance(i) }));
@@ -473,7 +485,7 @@ const ACTIONS = {
       q('payments', '*,invoices(client_id)', inMonth('paid_at')), q('quotations', 'id,status,client_id', inMonth('created_at')),
       q('project_files', 'id', inMonth('created_at')), q('messages', 'id', inMonth('created_at')),
       q('activity_logs', 'action', r => inMonth('created_at')(r).limit(5000)),
-      q('invoices', 'id,total,status'), q('payments', 'invoice_id,amount,verified'),
+      qAll('invoices', 'id,total,status'), qAll('payments', 'invoice_id,amount,verified'),
       q('projects', '*', r => r.in('status', ['Confirmed', 'In Progress', 'Internal Review', 'Client Review', 'Revision Requested', 'Approved', 'Ready for Delivery']).order('deadline', { ascending: true, nullsFirst: false }))
     ]);
     const completed = await q('projects', '*', r => inMonth('updated_at')(r).eq('status', 'Completed'));
@@ -496,7 +508,7 @@ const ACTIONS = {
   async 'quote-status'(el) { const { error } = await supabase.rpc('set_quotation_status', { p_id: el.dataset.id, p_status: el.dataset.status }); if (error) throw error; toast(`Marked as ${el.dataset.status.toLowerCase()}`); await refresh(); },
   async 'respond-quote'(el) { const accept = el.dataset.accept === 'true'; if (!confirm(accept ? 'Accept this quotation?' : 'Decline this quotation?')) return; const { error } = await supabase.rpc('respond_quotation', { p_id: el.dataset.id, p_accept: accept }); if (error) throw error; toast(accept ? 'Quotation accepted' : 'Quotation declined'); await refresh(); },
   'convert-quote'(el) { showModal('convert', { quote: el.dataset.id }); },
-  async 'delete-quote'(el) { if (!confirm('Delete this draft quotation?')) return; must(await supabase.from('quotations').delete().eq('id', el.dataset.id).eq('status', 'Draft')); location.href = 'quotations.html'; },
+  async 'delete-quote'(el) { if (!confirm('Delete this draft quotation?')) return; const { data, error } = await supabase.from('quotations').delete().eq('id', el.dataset.id).eq('status', 'Draft').select('id'); if (error) throw error; if (!data?.length) return toast('Only draft quotations can be deleted.'); location.href = 'quotations.html'; },
   'edit-service'(el) { const d = el.dataset; showModal('service', { id: d.id, values: { name: d.name, description: d.description, unit_price: d.price, active: d.active === 'true' } }); },
   async 'toggle-service'(el) { must(await supabase.from('services').update({ active: el.dataset.active !== 'true' }).eq('id', el.dataset.id)); await refresh(); },
   async 'add-checklist'(el) {
@@ -527,7 +539,7 @@ const ACTIONS = {
     const { data: prof, error } = await supabase.from('profiles').select('id,role').ilike('email', email.replace(/[\\%_]/g, '\\$&')).maybeSingle(); if (error) throw error;
     if (!prof) return toast('No registered user with that email. Create them in Supabase → Authentication → Users first.');
     if (prof.role !== 'client') return toast('That user is an admin, not a client account.');
-    must(await supabase.from('client_users').insert({ client_id: el.dataset.client, user_id: prof.id })); toast('Account linked'); await refresh();
+    { const { error: le } = await supabase.from('client_users').insert({ client_id: el.dataset.client, user_id: prof.id }); if (le) throw new Error(le.code === '23505' ? 'That account is already linked to a client.' : le.message); } toast('Account linked'); await refresh();
   },
   async unlink(el) { if (!confirm('Remove this portal access?')) return; must(await supabase.from('client_users').delete().eq('client_id', el.dataset.client).eq('user_id', el.dataset.user)); await refresh(); },
   async 'void-invoice'(el) { if (!confirm('Void this invoice? Payments already recorded are kept.')) return; const { error } = await supabase.rpc('set_invoice_void', { p_id: el.dataset.id, p_void: true }); if (error) throw error; await refresh(); },
@@ -737,7 +749,7 @@ async function showBuilder(kind, preset = {}) {
   form.addEventListener('click', e => {
     if (e.target.closest('[data-add-line]')) { linesEl.insertAdjacentHTML('beforeend', lineRow()); linesEl.lastElementChild.querySelector('[data-service]').focus(); recalc(); }
     const rm = e.target.closest('[data-remove-line]');
-    if (rm) { if (linesEl.children.length > 1) rm.closest('.line').remove(); else rm.closest('.line').querySelectorAll('input').forEach(i => { i.value = i.matches('[data-qty]') ? 1 : ''; }); recalc(); }
+    if (rm) { if (linesEl.children.length > 1) rm.closest('.line').remove(); else rm.closest('.line').querySelectorAll('input').forEach(i => { i.value = i.matches('[data-qty]') ? 1 : ''; }); rm.closest('.line').querySelector('[data-service]').value = ''; recalc(); }
   });
   if (preset.client_id) setClient(preset.client_id);
   if (preset.project_id) { projectSel.value = preset.project_id; onProject(); }
@@ -916,6 +928,7 @@ async function run() {
   refreshBell().catch(() => {}); setInterval(() => refreshBell().catch(() => {}), 60000);
   startIdleTimer();
   await refresh();
+  if (/messages$/.test(page)) setInterval(() => { if (!document.hidden && !document.querySelector('.modal-backdrop')) refresh(); }, 30000);
   mfaBanner();
 }
 async function mfaBanner() {
