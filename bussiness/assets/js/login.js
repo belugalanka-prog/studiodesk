@@ -78,6 +78,7 @@ form.addEventListener('submit', async event => {
     if (!r) { await supabase.auth.signOut(); throw new Error(messages.noprofile); }
     if (r !== role) { await supabase.auth.signOut(); throw new Error(messages.wrongrole); }
     writeGuard({ fails: 0, until: 0 });
+    try { await supabase.rpc('record_login'); } catch (_) { /* alert feature optional until features.sql is applied */ }
     location.href = home;
   } catch (e) {
     error.textContent = e.message;

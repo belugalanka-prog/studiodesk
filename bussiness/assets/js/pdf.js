@@ -240,7 +240,8 @@ export async function downloadMonthlyReport(data) {
   const received = data.payments.filter(p => p.verified);
 
   kpiRow(pdf, ctx, [['New clients', data.newClients.length], ['New projects', data.projectsCreated.length], ['Completed', data.projectsCompleted.length], ['Invoiced', money(sum(issued, i => i.total))], ['Received', money(sum(received, p => p.amount))]]);
-  kpiRow(pdf, ctx, [['Quotations sent', data.quotations.length], ['Accepted', data.quotations.filter(x => x.status === 'Accepted').length], ['Files uploaded', data.filesCount], ['Messages', data.messagesCount], ['Outstanding now', money(data.snapshot.outstanding)]]);
+  const spent = sum(data.expenses || [], x => x.amount), income = sum(received, p => p.amount);
+  kpiRow(pdf, ctx, [['Expenses', money(spent)], ['Net profit', money(income - spent)], ['Quotations sent', data.quotations.length], ['Accepted', data.quotations.filter(x => x.status === 'Accepted').length], ['Outstanding now', money(data.snapshot.outstanding)]]);
 
   const byClient = {};
   received.forEach(p => { const n = data.clientNames[p.client_id] || 'Unknown'; byClient[n] = (byClient[n] || 0) + Number(p.amount); });
@@ -251,8 +252,9 @@ export async function downloadMonthlyReport(data) {
   section(pdf, ctx, 'Projects completed this month', ['Code', 'Project', 'Client', 'Completed'], data.projectsCompleted.map(p => [`P-${p.project_code}`, p.title, data.clientNames[p.client_id] || '-', fmtDate(p.updated_at)]));
   section(pdf, ctx, 'Invoices issued', ['Invoice', 'Client', 'Issued', 'Total', 'Status'], data.invoices.map(i => [`INV-${String(i.invoice_number).padStart(4, '0')}`, data.clientNames[i.client_id] || '-', fmtDate(i.issue_date), money(i.total), i.status]), { columnStyles: { 3: { halign: 'right' } } });
   section(pdf, ctx, 'Payments received', ['Date', 'Client', 'Method', 'Reference', 'Amount'], received.map(p => [fmtDate(p.paid_at), data.clientNames[p.client_id] || '-', p.method, p.reference || '-', money(p.amount)]), { columnStyles: { 4: { halign: 'right' } } });
+  section(pdf, ctx, 'Expenses', ['Date', 'Category', 'Description', 'Vendor', 'Amount'], (data.expenses || []).map(x => [fmtDate(x.spent_on), x.category, x.description, x.vendor || '-', money(x.amount)]), { columnStyles: { 4: { halign: 'right' } } });
   section(pdf, ctx, 'Projects in progress (current)', ['Code', 'Project', 'Client', 'Status', 'Progress', 'Deadline'], data.activeProjects.map(p => [`P-${p.project_code}`, p.title, data.clientNames[p.client_id] || '-', p.status, `${p.progress || 0}%`, fmtDate(p.deadline)]), { columnStyles: { 4: { halign: 'right' } } });
-  section(pdf, ctx, 'Database activity this month', ['Event', 'Count'], Object.entries(data.activityCounts).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, String(v)]), { columnStyles: { 1: { halign: 'right' } } });
+  section(pdf, ctx, 'Database activity this month', ['Event', 'Count'], [...Object.entries(data.activityCounts).sort((a, b) => b[1] - a[1]), ['files uploaded', data.filesCount], ['project messages', data.messagesCount]].map(([k, v]) => [k, String(v)]), { columnStyles: { 1: { halign: 'right' } } });
 
   footers(pdf, `Monthly summary · ${label}`);
   pdf.save(`Monthly-summary-${data.month}.pdf`);
